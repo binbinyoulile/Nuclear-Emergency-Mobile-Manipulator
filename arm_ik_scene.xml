@@ -1,0 +1,6 @@
+<mujoco model="ur10e_arm_ik">
+  <include file="models/universal_robots_ur10e/ur10e.xml"/>
+  <compiler angle="radian" coordinate="local" inertiafromgeom="auto"
+            meshdir="models/universal_robots_ur10e/assets"/>
+  <option timestep="0.001" gravity="0 0 -9.81" integrator="RK4" cone="elliptic" impratio="10"/>
+</mujoco>
