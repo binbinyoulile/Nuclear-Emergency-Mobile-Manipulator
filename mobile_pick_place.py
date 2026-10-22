@@ -29,7 +29,9 @@ from scipy.spatial.transform import Rotation
 # ---------------------------------------------------------------------------
 HERE = os.path.dirname(os.path.abspath(__file__))
 IK_SCENE = os.path.join(HERE, "arm_ik_scene.xml")
-MOBILE_SCENE = os.path.join(HERE, "mobile_scene.xml")
+MOBILE_SCENE = os.environ.get(
+    "MOBILE_SCENE_PATH", os.path.join(HERE, "mobile_scene.xml")
+)
 
 # ---------------------------------------------------------------------------
 # Task geometry and control parameters

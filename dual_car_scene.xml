@@ -1,0 +1,108 @@
+<mujoco model="dual_car_nuclear_recovery">
+  <include file="models/universal_robots_ur10e/dual_mobile_ur10e.xml" />
+
+  <compiler angle="radian" coordinate="local" inertiafromgeom="auto" meshdir="models/universal_robots_ur10e/assets" />
+  <option timestep="0.001" gravity="0 0 -9.81" integrator="RK4" cone="elliptic" impratio="10"/>
+
+  <visual>
+    <headlight diffuse="0.65 0.65 0.65" ambient="0.15 0.15 0.15" specular="0.1 0.1 0.1" />
+    <rgba haze="0.15 0.25 0.35 1" />
+    <global azimuth="135" elevation="-22" />
+    <quality shadowsize="2048" />
+  </visual>
+
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="0.25 0.45 0.65" rgb2="0.02 0.03 0.05" width="512" height="3072" />
+    <texture type="2d" name="ground_tex" builtin="checker" mark="edge" rgb1="0.25 0.28 0.30" rgb2="0.12 0.14 0.16" markrgb="0.65 0.65 0.65" width="300" height="300" />
+    <material name="ground_mat" texture="ground_tex" texuniform="true" texrepeat="12 12" reflectance="0.15" />
+    <material name="radio_mat" rgba="1.0 0.72 0.05 1" />
+    <material name="bucket_mat" rgba="0.18 0.52 0.72 1" />
+    <material name="start_line_mat" rgba="1.0 0.20 0.12 1" />
+    <material name="target_zone_mat" rgba="0.05 0.85 0.55 1" />
+  </asset>
+
+  <worldbody>
+    <light name="key_light" pos="0 -0.5 2.2" dir="0 0 -1" directional="true" diffuse="0.8 0.8 0.8" specular="0.2 0.2 0.2" />
+
+    <geom name="floor" type="plane" size="30 30 0.1" material="ground_mat" friction="2.0 0.0 0.0" condim="6" solref="0.004 1" solimp="0.95 0.99 0.001" />
+
+    
+    <!-- Start line at Y=0, spanning the full working width. -->
+    <geom name="start_line" type="box" size="15.0 0.05 0.006"
+          pos="0 0 0.006" material="start_line_mat"
+          contype="0" conaffinity="0" />
+
+    <!-- Target rectangle: 2 m x 1 m, X -1..1 m, Y 20.5..21.5 m. -->
+    <geom name="target_zone_x_min" type="box" size="0.018 0.50 0.006"
+          pos="-1.00 21.00 0.006" material="target_zone_mat"
+          contype="0" conaffinity="0" />
+    <geom name="target_zone_x_max" type="box" size="0.018 0.50 0.006"
+          pos="1.00 21.00 0.006" material="target_zone_mat"
+          contype="0" conaffinity="0" />
+    <geom name="target_zone_y_min" type="box" size="1.00 0.018 0.006"
+          pos="0 20.50 0.006" material="target_zone_mat"
+          contype="0" conaffinity="0" />
+    <geom name="target_zone_y_max" type="box" size="1.00 0.018 0.006"
+          pos="0 21.50 0.006" material="target_zone_mat"
+          contype="0" conaffinity="0" />
+
+    <!-- Six sparse obstacles in the long transit corridor Y=5..15 m. -->
+    <body name="obstacle_0" pos="-1.70 5.00 0.35">
+      <geom name="obstacle_0_geom" type="box" size="0.50 0.30 0.35"
+            rgba="0.85 0.28 0.12 1" friction="1.0 0.5 0.5"
+            contype="1" conaffinity="1" condim="3" solref="0.005 1"/>
+    </body>
+    <body name="obstacle_1" pos="1.70 9.00 0.35">
+      <geom name="obstacle_1_geom" type="box" size="0.50 0.30 0.35"
+            rgba="0.15 0.55 0.85 1" friction="1.0 0.5 0.5"
+            contype="1" conaffinity="1" condim="3" solref="0.005 1"/>
+    </body>
+    <body name="obstacle_2" pos="-2.30 13.00 0.35">
+      <geom name="obstacle_2_geom" type="box" size="0.50 0.30 0.35"
+            rgba="0.55 0.25 0.80 1" friction="1.0 0.5 0.5"
+            contype="1" conaffinity="1" condim="3" solref="0.005 1"/>
+    </body>
+    <body name="obstacle_3" pos="3.20 16.50 0.35">
+      <geom name="obstacle_3_geom" type="box" size="0.50 0.30 0.35"
+            rgba="0.20 0.70 0.30 1" friction="1.0 0.5 0.5"
+            contype="1" conaffinity="1" condim="3" solref="0.005 1"/>
+    </body>
+    <body name="obstacle_4" pos="-3.80 7.00 0.25">
+      <geom name="obstacle_4_geom" type="box" size="0.35 0.25 0.25"
+            rgba="0.85 0.75 0.10 1" friction="1.0 0.5 0.5"
+            contype="1" conaffinity="1" condim="3" solref="0.005 1"/>
+    </body>
+    <body name="obstacle_5" pos="3.80 12.00 0.25">
+      <geom name="obstacle_5_geom" type="box" size="0.35 0.25 0.25"
+            rgba="0.20 0.75 0.70 1" friction="1.0 0.5 0.5"
+            contype="1" conaffinity="1" condim="3" solref="0.005 1"/>
+    </body>
+
+    <body name="grasp_object" pos="0 21.0 0.01">
+      <freejoint name="obj_free" />
+      <geom name="object_geom" type="cylinder" size="0.01 0.025" quat="0.707107 0 0.707107 0" material="radio_mat" mass="0.08" contype="1" conaffinity="1" friction="5.0 2.0 1.0" condim="6" solref="0.004 1" solimp="0.95 0.99 0.001" />
+    </body>
+
+    
+  </worldbody>
+
+  <actuator>
+    
+    <velocity name="wheel_fl_act" joint="wheel_fl_joint" kv="45" ctrlrange="-70 70" forcerange="-180 180" />
+    <velocity name="wheel_fr_act" joint="wheel_fr_joint" kv="45" ctrlrange="-70 70" forcerange="-180 180" />
+    <velocity name="wheel_rl_act" joint="wheel_rl_joint" kv="45" ctrlrange="-70 70" forcerange="-180 180" />
+    <velocity name="wheel_rr_act" joint="wheel_rr_joint" kv="45" ctrlrange="-70 70" forcerange="-180 180" />
+
+    <position name="wheel_fl_steer_act" joint="wheel_fl_steer_joint" kp="800" kv="40" ctrlrange="-0.7 0.7" forcerange="-120 120" />
+    <position name="wheel_fr_steer_act" joint="wheel_fr_steer_joint" kp="800" kv="40" ctrlrange="-0.7 0.7" forcerange="-120 120" />
+
+    <!-- Car 2: identical chassis, no arm -->
+    <velocity name="car2_wheel_fl_act" joint="car2_wheel_fl_joint" kv="45" ctrlrange="-70 70" forcerange="-180 180" />
+    <velocity name="car2_wheel_fr_act" joint="car2_wheel_fr_joint" kv="45" ctrlrange="-70 70" forcerange="-180 180" />
+    <velocity name="car2_wheel_rl_act" joint="car2_wheel_rl_joint" kv="45" ctrlrange="-70 70" forcerange="-180 180" />
+    <velocity name="car2_wheel_rr_act" joint="car2_wheel_rr_joint" kv="45" ctrlrange="-70 70" forcerange="-180 180" />
+    <position name="car2_wheel_fl_steer_act" joint="car2_wheel_fl_steer_joint" kp="800" kv="40" ctrlrange="-0.7 0.7" forcerange="-120 120" />
+    <position name="car2_wheel_fr_steer_act" joint="car2_wheel_fr_steer_joint" kp="800" kv="40" ctrlrange="-0.7 0.7" forcerange="-120 120" />
+
+    <general class="2f85" name="fingers_actuator" tendon="split" forcerange="-5 5" ctrlrange="0 255" gainprm="0.3137255 0 0" biasprm="0 -100 -10" /></actuator>
+</mujoco>
