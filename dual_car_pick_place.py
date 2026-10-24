@@ -22,6 +22,7 @@ from PIL import Image
 from scipy.spatial.transform import Rotation
 
 HERE = Path(os.path.abspath(__file__)).parent
+SNAPSHOT_DIR = HERE / "docs" / "screenshots"
 # MuJoCo on Windows does not reliably open Unicode paths. The existing project
 # has an ASCII junction at D:/robot_mobile; prefer it when available.
 ASCII_ROOT = Path("D:/robot_mobile")
@@ -328,8 +329,10 @@ def capture_snapshot(
                     else car.point_color
                 )
                 _set_scene_geom(scene, point, color)
-        Image.fromarray(renderer.render()).save(path)
-    print("  saved", path)
+        output_path = SNAPSHOT_DIR / Path(path).name
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        Image.fromarray(renderer.render()).save(output_path)
+    print("  saved", output_path)
 
 
 class CarController:
@@ -1127,15 +1130,19 @@ def _save_vision_debug(
         2,
         cv2.LINE_AA,
     )
-    cv2.imwrite("dual_vision_rgb.png", vis)
+    SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+    Image.fromarray(cv2.cvtColor(vis, cv2.COLOR_BGR2RGB)).save(
+        SNAPSHOT_DIR / "dual_vision_rgb.png"
+    )
     if "mask" in VISION_LAST:
-        cv2.imwrite("dual_vision_mask.png", VISION_LAST["mask"])
+        Image.fromarray(VISION_LAST["mask"]).save(
+            SNAPSHOT_DIR / "dual_vision_mask.png"
+        )
     depth = VISION_LAST["depth"]
     depth_vis = np.clip(depth / 2.0, 0.0, 1.0)
-    cv2.imwrite(
-        "dual_vision_depth.png",
-        np.round(depth_vis * 255.0).astype(np.uint8),
-    )
+    Image.fromarray(
+        np.round(depth_vis * 255.0).astype(np.uint8)
+    ).save(SNAPSHOT_DIR / "dual_vision_depth.png")
 
 
 def get_object_truth_for_validation() -> np.ndarray:

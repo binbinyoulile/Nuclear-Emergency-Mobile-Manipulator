@@ -28,9 +28,11 @@ from scipy.spatial.transform import Rotation
 # Paths
 # ---------------------------------------------------------------------------
 HERE = os.path.dirname(os.path.abspath(__file__))
-IK_SCENE = os.path.join(HERE, "arm_ik_scene.xml")
+ASCII_ROOT = "D:/robot_mobile"
+IK_ROOT = ASCII_ROOT if os.path.exists(os.path.join(ASCII_ROOT, "arm_ik_scene.xml")) else HERE
+IK_SCENE = os.path.join(IK_ROOT, "arm_ik_scene.xml")
 MOBILE_SCENE = os.environ.get(
-    "MOBILE_SCENE_PATH", os.path.join(HERE, "mobile_scene.xml")
+    "MOBILE_SCENE_PATH", os.path.join(IK_ROOT, "dual_car_scene.xml")
 )
 
 # ---------------------------------------------------------------------------
