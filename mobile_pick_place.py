@@ -28,12 +28,31 @@ from scipy.spatial.transform import Rotation
 # Paths
 # ---------------------------------------------------------------------------
 HERE = os.path.dirname(os.path.abspath(__file__))
-ASCII_ROOT = "D:/robot_mobile"
-IK_ROOT = ASCII_ROOT if os.path.exists(os.path.join(ASCII_ROOT, "arm_ik_scene.xml")) else HERE
-IK_SCENE = os.path.join(IK_ROOT, "arm_ik_scene.xml")
+IK_SCENE = os.path.join(HERE, "arm_ik_scene.xml")
 MOBILE_SCENE = os.environ.get(
-    "MOBILE_SCENE_PATH", os.path.join(IK_ROOT, "dual_car_scene.xml")
+    "MOBILE_SCENE_PATH", os.path.join(HERE, "dual_car_scene.xml")
 )
+if not os.path.isabs(MOBILE_SCENE):
+    MOBILE_SCENE = os.path.join(HERE, MOBILE_SCENE)
+MOBILE_SCENE = os.path.abspath(MOBILE_SCENE)
+
+
+def load_mjcf(scene_path: str) -> mujoco.MjModel:
+    """Load an MJCF through an ASCII relative filename.
+
+    MuJoCo can fail on Unicode absolute paths on Windows. Changing into the
+    scene directory before passing its basename keeps the call portable and
+    preserves the relative include/meshdir paths declared by each scene.
+    """
+    scene_path = os.path.abspath(scene_path)
+    if not os.path.isfile(scene_path):
+        raise FileNotFoundError(f"MuJoCo scene not found: {scene_path}")
+    previous_cwd = os.getcwd()
+    try:
+        os.chdir(os.path.dirname(scene_path))
+        return mujoco.MjModel.from_xml_path(os.path.basename(scene_path))
+    finally:
+        os.chdir(previous_cwd)
 
 # ---------------------------------------------------------------------------
 # Task geometry and control parameters
@@ -115,8 +134,8 @@ def pick_solver() -> str:
 # ---------------------------------------------------------------------------
 # Models and named indices
 # ---------------------------------------------------------------------------
-IK_MODEL = mujoco.MjModel.from_xml_path(IK_SCENE)
-MODEL = mujoco.MjModel.from_xml_path(MOBILE_SCENE)
+IK_MODEL = load_mjcf(IK_SCENE)
+MODEL = load_mjcf(MOBILE_SCENE)
 DATA = mujoco.MjData(MODEL)
 SOLVER = pick_solver()
 

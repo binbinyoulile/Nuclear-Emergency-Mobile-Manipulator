@@ -1,9 +1,9 @@
 """Dual-car nuclear waste recovery simulation.
 
-Phase 1 covers the physical scene, shared chassis controller, independent
-lidar avoidance, and the cooperative mission state machine. The four-layer
-vision interface is scaffolded but intentionally left as a placeholder for
-the next iteration.
+Two mobile manipulators share a MuJoCo scene and cooperatively recover a
+radioactive cylinder. The main entry point integrates lidar-based local
+avoidance, D435i RGB/depth perception, arm IK, grasping, transport, and a
+precision return-home workflow.
 """
 
 from __future__ import annotations
@@ -23,11 +23,7 @@ from scipy.spatial.transform import Rotation
 
 HERE = Path(os.path.abspath(__file__)).parent
 SNAPSHOT_DIR = HERE / "docs" / "screenshots"
-# MuJoCo on Windows does not reliably open Unicode paths. The existing project
-# has an ASCII junction at D:/robot_mobile; prefer it when available.
-ASCII_ROOT = Path("D:/robot_mobile")
-SCENE_ROOT = ASCII_ROOT if (ASCII_ROOT / "dual_car_scene.xml").exists() else HERE
-os.environ["MOBILE_SCENE_PATH"] = str(SCENE_ROOT / "dual_car_scene.xml")
+os.environ.setdefault("MOBILE_SCENE_PATH", str(HERE / "dual_car_scene.xml"))
 
 import mobile_pick_place as base  # noqa: E402
 
@@ -1025,7 +1021,7 @@ def run_two_reverse_returns(
 
 
 # ---------------------------------------------------------------------------
-# Four-layer camera interface scaffold. Phase 2 will fill these in.
+# Four-layer D435i perception pipeline.
 # ---------------------------------------------------------------------------
 def get_camera_data() -> tuple[np.ndarray, np.ndarray]:
     """Layer 1: data acquisition from the wrist-mounted D435i.
@@ -1111,40 +1107,6 @@ def pixel_to_world(u: int, v: int, depth: float) -> np.ndarray:
     return cam_pos + cam_mat @ point_cam
 
 
-def _save_vision_debug(
-    rgb: np.ndarray,
-    u: int,
-    v: int,
-    contour: np.ndarray,
-) -> None:
-    vis = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-    cv2.drawContours(vis, [contour], -1, (0, 255, 0), 2)
-    cv2.circle(vis, (u, v), 5, (255, 0, 0), -1)
-    cv2.putText(
-        vis,
-        f"target pixel=({u},{v})",
-        (12, 28),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.7,
-        (255, 255, 255),
-        2,
-        cv2.LINE_AA,
-    )
-    SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
-    Image.fromarray(cv2.cvtColor(vis, cv2.COLOR_BGR2RGB)).save(
-        SNAPSHOT_DIR / "dual_vision_rgb.png"
-    )
-    if "mask" in VISION_LAST:
-        Image.fromarray(VISION_LAST["mask"]).save(
-            SNAPSHOT_DIR / "dual_vision_mask.png"
-        )
-    depth = VISION_LAST["depth"]
-    depth_vis = np.clip(depth / 2.0, 0.0, 1.0)
-    Image.fromarray(
-        np.round(depth_vis * 255.0).astype(np.uint8)
-    ).save(SNAPSHOT_DIR / "dual_vision_depth.png")
-
-
 def get_object_truth_for_validation() -> np.ndarray:
     """Read object truth only after vision output, for error validation."""
     return base.DATA.qpos[
@@ -1161,7 +1123,7 @@ def process_camera_frame(
     detection = detect_yellow_target(rgb)
     if detection is None:
         raise RuntimeError("yellow radioactive target not found in D435i image")
-    u, v, contour, _ = detection
+    u, v, _, _ = detection
 
     v0, v1 = max(0, v - 2), min(depth.shape[0], v + 3)
     u0, u1 = max(0, u - 2), min(depth.shape[1], u + 3)
@@ -1174,7 +1136,6 @@ def process_camera_frame(
         raise RuntimeError("no valid depth samples around target centroid")
     target_depth = float(np.median(valid))
     vision_world = pixel_to_world(u, v, target_depth)
-    _save_vision_debug(rgb, u, v, contour)
 
     truth = get_object_truth_for_validation()
     error = float(np.linalg.norm(vision_world - truth))
@@ -1542,7 +1503,7 @@ class DualCarMission:
             self.car2,
             [(float(provisional_goal[0]), float(provisional_goal[1]))],
             self.cars,
-            snapshot_name="dual_car2_avoid.png" if self.save_snapshots else None,
+            snapshot_name=None,
             waypoint_timeout=32.0,
             final_tolerance=0.07,
             max_speed=6.50,
@@ -1621,16 +1582,6 @@ class DualCarMission:
             0.5,
             car2_follower,
         )
-
-        if self.save_snapshots:
-            capture_snapshot(
-                "dual_parallel_transit.png",
-                self.cars,
-                [0.5, 17.0, 0.35],
-                13.0,
-                135.0,
-                -42.0,
-            )
 
         grasp_start = base.DATA.time
         grasp_success = execute_grasp_concurrent(
@@ -1722,7 +1673,7 @@ class DualCarMission:
             self.finger,
             self.cars,
             reverse_exit,
-            snapshot_name="dual_reverse_exit.png" if self.save_snapshots else None,
+            snapshot_name=None,
         )
 
         car1_return_path = [
@@ -1813,14 +1764,6 @@ class DualCarMission:
                 9.0,
                 135.0,
                 -38.0,
-            )
-            capture_snapshot(
-                "dual_bucket_top.png",
-                self.cars,
-                [float(car2_final[0]), float(car2_final[1]), 0.42],
-                0.62,
-                90.0,
-                -80.0,
             )
         return bool(final_inside and both_returned and contacts == 0)
 

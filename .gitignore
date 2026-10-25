@@ -1,10 +1,22 @@
+# Python environments and caches
 .venv/
 venv/
 __pycache__/
 *.pyc
+.pytest_cache/
+
+# MuJoCo binary mesh assets (restored with scripts/fetch_models.py)
 assets/
-models/
+models/**/assets/
 *.stl
 *.obj
+models/**/*.png
+
+# Local tooling and logs
 .codex/
 *.log
+
+# Editors and OS metadata
+.vscode/
+.idea/
+.DS_Store
