@@ -1,10 +1,19 @@
-"""Dual-car nuclear waste recovery simulation.
+"""双车协同核废料回收 MuJoCo 仿真入口。
 
-Two mobile manipulators share a MuJoCo scene and cooperatively recover a
-radioactive cylinder. The main entry point integrates lidar-based local
-avoidance, D435i RGB/depth perception, arm IK, grasping, transport, and a
-precision return-home workflow.
-"""
+文件目的：
+    在同一场景中协调作业车 CAR1、运输车 CAR2、雷达局部避障、D435i 视觉定位、UR10e 抓取和协同投放。
+整体输入输出：
+    输入为 --seed、--snapshot/--headless 和 MJCF 场景；输出为实时画面、关键截图、终端日志及任务成功布尔值。
+依赖与版本：
+    Python 3.10+、mujoco、mink、numpy、scipy、opencv-python、Pillow；模型资产由 scripts/fetch_models.py 获取。
+运行方式：
+    D:/Python313/python.exe dual_car_pick_place.py
+    D:/Python313/python.exe dual_car_pick_place.py --snapshot --seed 7
+关键假设：
+    XML 内相机名为 d435i，雷达站点、车辆和障碍物命名固定；物体仅供视觉使用，真值只在结果生成后做误差校验。
+已知限制：
+    规则控制与理想仿真传感器为主，尚未接入 ROS2、真实相机噪声、真实通信延迟和执行器故障。
+重要性等级：A"""
 
 from __future__ import annotations
 
@@ -34,7 +43,7 @@ base.COMMAND_RAMP = 0.35
 
 
 # ---------------------------------------------------------------------------
-# Mission geometry
+# 任务几何布局
 # ---------------------------------------------------------------------------
 TARGET_ZONE_X_MIN = -1.00
 TARGET_ZONE_X_MAX = 1.00
@@ -79,7 +88,7 @@ DROP_WORLD_Z = BUCKET_OPENING_Z + 0.035
 PRE_DROP_WORLD_Z = BUCKET_OPENING_Z + 0.10
 BUCKET_XY_TOL = 0.05
 
-# Lidar configuration, shared by both cars.
+# 两车共用的激光雷达配置。
 LIDAR_PERIOD = 0.10
 LIDAR_AZ_SAMPLES = 120
 LIDAR_CHANNELS = 16
@@ -98,6 +107,16 @@ VISION_LAST: dict[str, np.ndarray] = {}
 
 
 def _id(obj_type, name: str) -> int:
+    """查询 MuJoCo 命名对象并校验是否存在。
+
+参数：
+    obj_type: mjtObj 对象类型，例如 mjOBJ_BODY 或 mjOBJ_ACTUATOR。
+    name: MJCF 中的对象名。
+返回：
+    非负整数对象下标。
+异常：
+    名称不存在时抛 RuntimeError，便于尽早发现 XML 与控制代码不一致。
+重要性等级：B"""
     value = mujoco.mj_name2id(base.MODEL, obj_type, name)
     if value < 0:
         raise RuntimeError(f"missing {obj_type}: {name}")
@@ -105,6 +124,17 @@ def _id(obj_type, name: str) -> int:
 
 
 def body_pose(body_name: str) -> tuple[np.ndarray, float]:
+    """读取刚体世界位置与偏航角。
+
+参数：
+    body_name: MuJoCo body 名称。
+返回：
+    (pos, yaw)，pos shape=(3,) 单位 m；yaw 取世界矩阵 XY 分量，单位 rad。
+副作用：
+    调用 mj_forward 刷新派生量。
+异常：
+    名称缺失时由 _id 抛 RuntimeError。
+重要性等级：B"""
     mujoco.mj_forward(base.MODEL, base.DATA)
     body_id = _id(mujoco.mjtObj.mjOBJ_BODY, body_name)
     pos = base.DATA.xpos[body_id].copy()
@@ -114,6 +144,13 @@ def body_pose(body_name: str) -> tuple[np.ndarray, float]:
 
 
 def yaw_quaternion(yaw: float) -> list[float]:
+    """把绕 Z 轴的偏航角转换为 wxyz 四元数。
+
+参数：
+    yaw: 偏航角，单位 rad。
+返回：
+    [w, x, y, z] 列表，可直接写入 MuJoCo free joint 的 qpos。
+重要性等级：C"""
     return [
         float(np.cos(yaw / 2.0)),
         0.0,
@@ -123,6 +160,15 @@ def yaw_quaternion(yaw: float) -> list[float]:
 
 
 def _set_scene_geom(scene, point: np.ndarray, color: np.ndarray) -> None:
+    """向用户叠加场景追加一个雷达点球体。
+
+参数：
+    scene: mujoco.MjvScene，通常是 viewer.user_scn 或 Renderer 内部场景。
+    point: 世界坐标，shape=(3,)，单位 m。
+    color: RGBA 颜色，shape=(4,)，范围 [0, 1]。
+副作用：
+    scene.ngeom 未达上限时修改其 geoms 并递增 ngeom；达到上限时静默跳过。
+重要性等级：C"""
     if scene.ngeom >= scene.maxgeom:
         return
     geom = scene.geoms[scene.ngeom]
@@ -138,7 +184,13 @@ def _set_scene_geom(scene, point: np.ndarray, color: np.ndarray) -> None:
 
 
 class LidarScanner:
-    """VLP-16-like scanner implemented with MuJoCo mj_multiRay."""
+    """用 mj_multiRay 模拟 VLP-16 Lite 的 16 线 360 度雷达。
+
+关键参数：
+    10 Hz 更新，水平 360 度，垂直 -15 到 +15 度，理论最大 100 m；导航只使用前向 2.8 m 内的障碍回波。
+动态障碍处理：
+    排除自车，并把另一辆车固定视为动态障碍；障碍物仅接受名称以 obstacle_ 开头的 geom。
+重要性等级：A"""
 
     def __init__(
         self,
@@ -146,6 +198,15 @@ class LidarScanner:
         own_body_name: str,
         other_body_name: str,
     ) -> None:
+        """初始化雷达站点、自车根体、动态障碍与最近距离缓存。
+
+参数：
+    site_name: 雷达 site 名称。
+    own_body_name: 自车 chassis body 名称，用于过滤自身回波。
+    other_body_name: 另一辆车 chassis body 名称，作为动态障碍。
+异常：
+    任一名称缺失时由 _id 抛 RuntimeError。
+重要性等级：A"""
         self.site_id = _id(mujoco.mjtObj.mjOBJ_SITE, site_name)
         self.own_root = int(
             base.MODEL.body_rootid[_id(mujoco.mjtObj.mjOBJ_BODY, own_body_name)]
@@ -178,10 +239,24 @@ class LidarScanner:
         self.front_points: list[np.ndarray] = []
 
     def scan_if_due(self) -> None:
+        """按 10 Hz 周期触发雷达扫描。
+
+副作用：
+    仿真时间距上次扫描至少 LIDAR_PERIOD 时调用 scan，否则保持旧点云。
+重要性等级：B"""
         if base.DATA.time - self.last_scan_time >= LIDAR_PERIOD:
             self.scan()
 
     def scan(self) -> None:
+        """执行一次全向多线射线扫描并更新避障缓存。
+
+返回：
+    无显式返回值；更新 front/rear/left/right 距离以及 vis_points。
+关键参数：
+    LIDAR_DETECT_RANGE=2.8 m 决定导航警戒距离；LIDAR_VIS_RANGE 只影响画面展示。
+副作用：
+    读取并刷新仿真派生状态，不推进物理时间。
+重要性等级：A"""
         mujoco.mj_forward(base.MODEL, base.DATA)
         origin = base.DATA.site_xpos[self.site_id].copy()
         rot = base.DATA.site_xmat[self.site_id].reshape(3, 3).copy()
@@ -278,6 +353,14 @@ class LidarScanner:
 
 
 def update_user_scene(viewer, cars: list["CarController"]) -> None:
+    """把两车最新雷达点云叠加到实时 viewer 画面。
+
+参数：
+    viewer: 被动 viewer；None 时直接返回。
+    cars: 两辆 CarController，提供雷达点与颜色。
+关键参数：
+    前向警戒扇区内的点显示为红色，其余点使用各车颜色。
+重要性等级：B"""
     if viewer is None:
         return
     scene = viewer.user_scn
@@ -304,6 +387,17 @@ def capture_snapshot(
     azimuth: float,
     elevation: float,
 ) -> None:
+    """离屏渲染并保存指定相机视角的 PNG 截图。
+
+参数：
+    path: 输出文件名，最终统一保存到 docs/screenshots。
+    cars: 需要叠加雷达点的车辆。
+    lookat/distance/azimuth/elevation: MuJoCo 自由相机参数。
+副作用：
+    创建高 480、宽 640 的 Renderer，写图片文件并打印路径。
+异常：
+    路径不可写或 Renderer 初始化失败时由底层库抛出。
+重要性等级：B"""
     cam = mujoco.MjvCamera()
     cam.type = mujoco.mjtCamera.mjCAMERA_FREE
     cam.lookat[:] = lookat
@@ -332,7 +426,11 @@ def capture_snapshot(
 
 
 class CarController:
-    """Shared four-wheel chassis and lidar behavior for either car."""
+    """封装单辆车共用的四轮底盘、雷达和运动指令状态。
+
+数据：
+    wheel_act 按 FL/FR/RL/RR 排列；left_cmd/right_cmd 为轮角速度指令，steer_cmd 为前轮角。
+重要性等级：A"""
 
     def __init__(
         self,
@@ -345,6 +443,18 @@ class CarController:
         other_body: str,
         free_joint_name: str,
     ) -> None:
+        """绑定一辆车的关节、执行器、雷达和动态障碍。
+
+参数：
+    name: 日志名称，如 CAR1。
+    chassis_body/free_joint_name: 底盘 body 与自由关节名。
+    wheel_joint_names/steer_joint_names: 轮子滚动关节和转向关节名。
+    lidar_site: 雷达 site 名。
+    point_color: 点云 RGBA 显示颜色。
+    other_body: 另一辆车底盘 body 名。
+异常：
+    任一名称缺失时由 _id 抛 RuntimeError。
+重要性等级：A"""
         self.name = name
         self.chassis_body = chassis_body
         self.body_id = _id(mujoco.mjtObj.mjOBJ_BODY, chassis_body)
@@ -376,13 +486,31 @@ class CarController:
         self.min_other_separation = float("inf")
 
     def pose(self) -> tuple[np.ndarray, float]:
+        """读取本车世界位置和偏航角。
+
+返回：
+    (pos, yaw)，单位分别为 m 和 rad。
+重要性等级：B"""
         return body_pose(self.chassis_body)
 
     def speed(self) -> float:
+        """读取底盘自由关节的平面线速度。
+
+返回：
+    sqrt(vx^2+vy^2)，单位 m/s。
+重要性等级：C"""
         return float(np.linalg.norm(base.DATA.qvel[self.dadr : self.dadr + 2]))
 
     def set_motion(self, left: float, right: float, steer: float) -> None:
-        # all four wheels roll; front axle also steers
+        # 四轮同时滚动；前轴同时负责转向
+        """写入左右轮速与前轮转向执行器。
+
+参数：
+    left/right: 左右轮角速度，单位 rad/s。
+    steer: 前轮转向角，单位 rad。
+关键参数：
+    wheel_act 下标 0/2 为左轮，1/3 为右轮；左右分配错误会导致原地打转。
+重要性等级：A"""
         base.DATA.ctrl[self.wheel_act[[0, 2]]] = left
         base.DATA.ctrl[self.wheel_act[[1, 3]]] = right
         base.DATA.ctrl[self.steer_act] = steer
@@ -394,6 +522,13 @@ class CarController:
         finger: base.FingerMotion,
         cars: list["CarController"],
     ) -> None:
+        """刹停底盘并推进若干仿真帧等待悬挂和车身稳定。
+
+参数：
+    sim、arm、finger、cars: 任务共享对象。
+副作用：
+    清零运动指令、保持机械臂与夹爪，并持续刷新 viewer 和物理状态。
+重要性等级：B"""
         self.left_cmd = 0.0
         self.right_cmd = 0.0
         self.steer_cmd = 0.0
@@ -417,6 +552,19 @@ class CarController:
         final_tolerance: float = 0.16,
         max_speed: float = base.V_MAX,
     ) -> None:
+        """阻塞执行一条路径，直到 PathFollower 完成或超时。
+
+参数：
+    path: [(x, y), ...] 世界坐标航点，单位 m。
+    snapshot_name: 路径过程中保存的截图名；None 表示不保存。
+    waypoint_timeout: 单航点超时，单位 s。
+    final_tolerance: 终点容差，单位 m。
+    max_speed: 本段最大线速度，单位 m/s。
+异常：
+    超时由 PathFollower.update 抛 RuntimeError。
+副作用：
+    推进物理与 viewer，结束后调用 stop_and_settle。
+重要性等级：A"""
         follower = PathFollower(
             self,
             path,
@@ -438,7 +586,13 @@ class CarController:
 
 
 class PathFollower:
-    """Non-blocking waypoint + lidar follower shared by both cars."""
+    """非阻塞的全局目标跟踪与雷达局部避障控制器。
+
+控制思路：
+    正常阶段始终朝当前航点前进；只有前向警戒区出现障碍时才产生局部转角，障碍消失后立即恢复直线目标。
+平滑策略：
+    使用加速度限制、转向降速和接近目标的平方根制动，避免急起急停。
+重要性等级：A"""
 
     def __init__(
         self,
@@ -450,6 +604,17 @@ class PathFollower:
         final_tolerance: float,
         max_speed: float = base.V_MAX,
     ) -> None:
+        """初始化路径、时序、雷达避障和速度状态。
+
+参数：
+    car: 被控制车辆。
+    path: 非空航点列表，单位 m。
+    cars: 场景内全部车辆，用于 viewer 与动态障碍更新。
+    snapshot_name: 可选中途截图名称。
+    waypoint_timeout/final_tolerance/max_speed: 超时 s、终点容差 m、最大速度 m/s。
+异常：
+    path 为空时抛 ValueError。
+重要性等级：A"""
         if not path:
             raise ValueError("path must not be empty")
         self.car = car
@@ -477,6 +642,11 @@ class PathFollower:
         self._print_waypoint()
 
     def _print_waypoint(self) -> None:
+        """打印当前航点序号和坐标。
+
+副作用：
+    仅输出终端日志，不改变控制状态。
+重要性等级：C"""
         wx, wy = self.path[self.index]
         print(
             f"  waypoint {self.index + 1}/{len(self.path)}: "
@@ -484,6 +654,13 @@ class PathFollower:
         )
 
     def append_path(self, extra: list[tuple[float, float]]) -> bool:
+        """在尚未完成时追加航点。
+
+参数：
+    extra: 新航点列表，单位 m。
+返回：
+    True 表示已追加；控制器已完成或列表为空时返回 False。
+重要性等级：B"""
         if self.done or not extra:
             return False
         self.path.extend((float(x), float(y)) for x, y in extra)
@@ -495,6 +672,15 @@ class PathFollower:
     def replace_final_waypoint(
         self, waypoint: tuple[float, float]
     ) -> bool:
+        """不中断行驶地替换最后一个航点。
+
+参数：
+    waypoint: 新终点 (x, y)，单位 m。
+返回：
+    True 表示已更新；控制器已完成时返回 False。
+用途：
+    二号车根据视觉结果动态修正停靠点，避免半路停车再启动。
+重要性等级：A"""
         if self.done:
             return False
         self.path[-1] = (float(waypoint[0]), float(waypoint[1]))
@@ -506,6 +692,17 @@ class PathFollower:
         return True
 
     def update(self, cars: list[CarController]) -> bool:
+        """推进一个控制帧的纯追踪、雷达避障和速度分配。
+
+参数：
+    cars: 全部车辆，用于更新点云显示和碰撞相关状态。
+返回：
+    True 表示路径完成，否则 False。
+异常：
+    单航点超过 waypoint_timeout 时抛 RuntimeError。
+关键参数：
+    LIDAR_DETECT_RANGE 决定提前避障距离；CAR2_MIN_SEPARATION 用于避免两车过近。
+重要性等级：A"""
         if self.done:
             return True
         car = self.car
@@ -561,7 +758,7 @@ class PathFollower:
                 forward = max(forward, 0.15)
 
         if car.lidar.front_blocked:
-            # Local avoidance only: target heading remains the macro goal.
+            # 仅做局部避障：宏观目标方向始终指向终点。
             if car.lidar.front_lateral <= 0.85:
                 if not self.avoid_active:
                     self.avoid_active = True
@@ -595,8 +792,7 @@ class PathFollower:
             self.avoid_active = False
             self.avoid_side = 0
 
-        # Smooth longitudinal profile: full speed on long straights, speed
-        # reduction in turns, and square-root braking near the goal.
+        # 平滑纵向速度曲线：长直线全速，转弯降速，接近终点按平方根曲线制动。
         if forward >= 0.0:
             turn_factor = 1.0 - 0.55 * min(
                 abs(alpha) / (np.pi / 2.0), 1.0
@@ -667,7 +863,9 @@ class PathFollower:
 
 
 class SkidTurnFollower:
-    """Short steering-assisted yaw correction for the heavy four-wheel car."""
+    """用较小轮速差和前轮辅助完成重载四轮车的短距离转向。
+
+重要性等级：B"""
 
     def __init__(
         self,
@@ -675,6 +873,13 @@ class SkidTurnFollower:
         target_heading: float,
         timeout: float = 8.0,
     ) -> None:
+        """初始化目标朝向和转向超时。
+
+参数：
+    car: 被控制车辆。
+    target_heading: 目标偏航角，单位 rad。
+    timeout: 超时时间，单位 s。
+重要性等级：B"""
         self.car = car
         self.target_heading = float(target_heading)
         self.start_time = base.DATA.time
@@ -686,6 +891,15 @@ class SkidTurnFollower:
         )
 
     def update(self, cars: list[CarController]) -> bool:
+        """推进一帧转向对齐。
+
+参数：
+    cars: 场景车辆列表，供画面刷新使用。
+返回：
+    True 表示已对齐，否则 False。
+异常：
+    超过 timeout 仍未对齐时抛 RuntimeError。
+重要性等级：B"""
         if self.done:
             return True
         car = self.car
@@ -719,6 +933,14 @@ def run_turn_with_secondary(
     turner: SkidTurnFollower,
     secondary: PathFollower,
 ) -> None:
+    """阻塞推进主车转向，同时让二号车继续按路径行驶。
+
+参数：
+    turner: 主车的转向控制器。
+    secondary: 可并行的二号车 PathFollower。
+副作用：
+    每帧保持机械臂与夹爪，更新两车控制并推进 sim。
+重要性等级：B"""
     while not turner.done:
         arm.hold()
         finger.hold()
@@ -730,7 +952,9 @@ def run_turn_with_secondary(
 
 
 class ReverseStraightFollower:
-    """Straight negative-speed return after heading alignment."""
+    """沿当前车头方向直线倒车，并以后向雷达限制速度。
+
+重要性等级：B"""
 
     def __init__(
         self,
@@ -738,6 +962,12 @@ class ReverseStraightFollower:
         target_y: float,
         max_speed: float = 0.55,
     ) -> None:
+        """初始化倒车目标 Y、最大速度和状态。
+
+参数：
+    target_y: 世界 Y 目标，单位 m。
+    max_speed: 倒车最大速度，单位 m/s，内部按负速度指令使用。
+重要性等级：B"""
         self.car = car
         self.target_y = float(target_y)
         self.max_speed = float(max_speed)
@@ -748,6 +978,15 @@ class ReverseStraightFollower:
         )
 
     def update(self, cars: list[CarController]) -> bool:
+        """推进一帧直线倒车。
+
+参数：
+    cars: 车辆列表，供雷达周期扫描与画面刷新。
+返回：
+    True 表示到达目标 Y，否则 False。
+关键参数：
+    后向 1.20 m 开始降速、0.50 m 停止，避免倒车碰撞。
+重要性等级：B"""
         if self.done:
             return True
         car = self.car
@@ -782,6 +1021,13 @@ def run_two_turns(
     cars: list[CarController],
     turners: list[SkidTurnFollower],
 ) -> None:
+    """并行推进两辆车的转向控制器直到全部完成。
+
+参数：
+    turners: 两辆车的 SkidTurnFollower 列表。
+副作用：
+    每帧保持机械臂与夹爪并推进仿真。
+重要性等级：B"""
     while any(not turner.done for turner in turners):
         arm.hold()
         finger.hold()
@@ -800,6 +1046,14 @@ def run_two_straight_reverses(
     followers: list[ReverseStraightFollower],
     snapshot_name: str | None = None,
 ) -> None:
+    """并行推进两辆车的直线倒车控制器。
+
+参数：
+    followers: ReverseStraightFollower 列表。
+    snapshot_name: 可选截图名称；当前只保留参数以兼容调用接口。
+副作用：
+    每帧刷新 viewer、推进物理；全部完成后返回。
+重要性等级：B"""
     snapshot_saved = False
     while any(not follower.done for follower in followers):
         arm.hold()
@@ -812,7 +1066,9 @@ def run_two_straight_reverses(
 
 
 class ReverseXAxisFollower:
-    """Reverse west along -X while holding an east-facing heading."""
+    """在指定车头姿态下沿 -X 方向倒车并保持航道。
+
+重要性等级：B"""
 
     def __init__(
         self,
@@ -821,6 +1077,13 @@ class ReverseXAxisFollower:
         target_heading: float = 0.0,
         max_speed: float = 0.50,
     ) -> None:
+        """初始化 X 目标、目标朝向和倒车速度。
+
+参数：
+    target_x: 结束位置的世界 X 坐标，单位 m。
+    target_heading: 期望偏航角，单位 rad。
+    max_speed: 正向大小的最大倒车速度，单位 m/s。
+重要性等级：B"""
         self.car = car
         self.target_x = float(target_x)
         self.target_heading = float(target_heading)
@@ -830,6 +1093,17 @@ class ReverseXAxisFollower:
         print(f"  [{car.name}] reverse along -X to X={self.target_x:.2f}")
 
     def update(self, cars: list[CarController]) -> bool:
+        """推进一帧 X 方向倒车与航向修正。
+
+参数：
+    cars: 车辆列表，供雷达与画面更新。
+返回：
+    True 表示到达目标 X，否则 False。
+异常：
+    t=0 后超过 20 s 未完成时抛 RuntimeError。
+关键参数：
+    rear_min 小于 1.20 m 时降速，小于 0.50 m 时停止。
+重要性等级：B"""
         if self.done:
             return True
         car = self.car
@@ -886,6 +1160,9 @@ def run_reverse_x_with_secondary(
     reverse: ReverseXAxisFollower,
     secondary: PathFollower,
 ) -> None:
+    """阻塞推进主车 X 方向倒车，同时让二号车继续路径跟踪。
+
+重要性等级：B"""
     while not reverse.done:
         arm.hold()
         finger.hold()
@@ -897,7 +1174,9 @@ def run_reverse_x_with_secondary(
 
 
 class ReverseFollower:
-    """Negative-speed return controller with rear-lidar speed limiting."""
+    """通用的负速度返航控制器，带后向雷达限速与航向保持。
+
+重要性等级：B"""
 
     def __init__(
         self,
@@ -907,6 +1186,14 @@ class ReverseFollower:
         max_speed: float = 0.55,
         target_x_lane: float | None = None,
     ) -> None:
+        """初始化返航 Y 目标、目标朝向和可选 X 航道。
+
+参数：
+    target_y: 返航目标 Y，单位 m。
+    target_heading: 倒车时保持的偏航角，单位 rad。
+    max_speed: 最大倒车速度，单位 m/s。
+    target_x_lane: 可选 X 航道修正量，单位 m。
+重要性等级：B"""
         self.car = car
         self.target_y = float(target_y)
         self.target_heading = float(target_heading)
@@ -919,6 +1206,15 @@ class ReverseFollower:
         )
 
     def update(self, cars: list[CarController]) -> bool:
+        """推进一帧倒车返航。
+
+参数：
+    cars: 车辆列表，供雷达和 viewer 更新。
+返回：
+    True 表示到达目标 Y，否则 False。
+关键参数：
+    后向小于 1.20 m 时减速、小于 0.55 m 时停止。
+重要性等级：B"""
         if self.done:
             return True
         car = self.car
@@ -973,6 +1269,9 @@ def run_two_followers(
     cars: list[CarController],
     followers: list[PathFollower],
 ) -> None:
+    """并行推进两辆车的 PathFollower 直到全部结束。
+
+重要性等级：B"""
     while any(not follower.done for follower in followers):
         arm.hold()
         finger.hold()
@@ -991,6 +1290,9 @@ def run_followers_until_primary_done(
     primary: PathFollower,
     secondary: PathFollower,
 ) -> None:
+    """推进主车直到完成，二号车在未完成前继续并行跟踪。
+
+重要性等级：B"""
     while not primary.done:
         arm.hold()
         finger.hold()
@@ -1009,6 +1311,11 @@ def run_two_reverse_returns(
     followers: list[ReverseFollower],
     snapshot_name: str | None = None,
 ) -> None:
+    """并行推进两辆车的 ReverseFollower 返航任务。
+
+参数：
+    snapshot_name: 可选截图名；当前保留用于兼容调用接口。
+重要性等级：B"""
     snapshot_saved = False
     while any(not follower.done for follower in followers):
         arm.hold()
@@ -1021,16 +1328,20 @@ def run_two_reverse_returns(
 
 
 # ---------------------------------------------------------------------------
-# Four-layer D435i perception pipeline.
+# D435i 四层视觉识别管线。
 # ---------------------------------------------------------------------------
 def get_camera_data() -> tuple[np.ndarray, np.ndarray]:
-    """Layer 1: data acquisition from the wrist-mounted D435i.
+    """视觉第 1 层：采集腕部 D435i 的 RGB 与深度帧。
 
-    Simulation: the camera pose comes from the XML camera named ``d435i``
-    attached below wrist_3_link. ROS2 replacement: subscribe to
-    /camera/color/image_raw and /camera/depth/image_rect_raw, convert both
-    messages to NumPy arrays, and preserve the same RGB/depth convention.
-    """
+功能：
+    使用 mujoco.Renderer(height=480, width=640)，显式指定 camera=d435i；先渲染 RGB，再启用深度渲染取深度并关闭。
+返回：
+    (rgb, depth)：RGB shape=(480,640,3)，深度 shape=(480,640)，单位 m。
+副作用：
+    写入 VISION_LAST 中的 rgb、depth、cam_pos、cam_mat，并打印相机局部安装位姿。
+Sim2Real：
+    未来 ROS2 中改为订阅 /camera/color/image_raw 与 /camera/depth/image_rect_raw 并转换为 NumPy。
+重要性等级：A"""
     cam_id = _id(mujoco.mjtObj.mjOBJ_CAMERA, "d435i")
     with mujoco.Renderer(base.MODEL, height=480, width=640) as renderer:
         renderer.update_scene(base.DATA, camera="d435i")
@@ -1052,7 +1363,17 @@ def get_camera_data() -> tuple[np.ndarray, np.ndarray]:
 def detect_yellow_target(
     rgb: np.ndarray,
 ) -> tuple[int, int, np.ndarray, np.ndarray] | None:
-    """Layer 2: HSV segmentation, morphology, largest-contour centroid."""
+    """视觉第 2 层：HSV 黄色分割、形态学去噪与最大轮廓质心。
+
+参数：
+    rgb: RGB 图像，shape=(H,W,3)，dtype=uint8。
+返回：
+    (u, v, contour, mask)；未找到目标时返回 None。
+关键参数：
+    H=[15,40]、S=[100,255]、V=[100,255]；先开运算去噪，再两次闭运算补洞。
+副作用：
+    写入 VISION_LAST["mask"]，供深度邻域过滤。
+重要性等级：A"""
     hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
     mask = cv2.inRange(
         hsv,
@@ -1078,12 +1399,20 @@ def detect_yellow_target(
 
 
 def pixel_to_world(u: int, v: int, depth: float) -> np.ndarray:
-    """Layer 3: pixel + depth -> camera optical frame -> MuJoCo world.
+    """视觉第 3 层：由像素与深度反投影到 MuJoCo 世界坐标。
 
-    Simulation uses cam_xpos/cam_xmat as the extrinsic transform. In ROS2,
-    replace this part with a tf2_ros lookup from the camera optical frame to
-    the world frame; the intrinsic projection remains identical.
-    """
+参数：
+    u, v: 像素坐标，原点在左上角。
+    depth: 相机沿视线方向的物理深度，单位 m。
+返回：
+    世界坐标 shape=(3,)，单位 m。
+算法：
+    fy=(H/2)/tan(fovy/2)，fx=fy，cx=W/2，cy=H/2；
+    X_cam=(u-cx)Z/fx，Y_cam=-(v-cy)Z/fy。
+    MuJoCo 相机 +Z 与视向相反，因此局部向量写成 [X_cam,Y_cam,-depth]。
+Sim2Real：
+    ROS2 中保留内参投影，但外参改用 tf2_ros 查询相机光学坐标系到世界坐标系。
+重要性等级：A"""
     rgb = VISION_LAST["rgb"]
     image_h, image_w = rgb.shape[:2]
     cam_id = _id(mujoco.mjtObj.mjOBJ_CAMERA, "d435i")
@@ -1095,8 +1424,8 @@ def pixel_to_world(u: int, v: int, depth: float) -> np.ndarray:
 
     x_cam = (u - cx) * depth / fx
     y_cam = -(v - cy) * depth / fy
-    # MuJoCo camera +Z points opposite the viewing direction. Keep the
-    # physical depth positive and negate it when forming the local vector.
+    # MuJoCo 相机 +Z 轴与视线方向相反。保持物理深度为正，
+    # 并在构造局部向量时对该轴取负。
     point_cam = np.array([x_cam, y_cam, -depth], dtype=float)
     cam_pos = VISION_LAST.get(
         "cam_pos", base.DATA.cam_xpos[cam_id]
@@ -1108,7 +1437,13 @@ def pixel_to_world(u: int, v: int, depth: float) -> np.ndarray:
 
 
 def get_object_truth_for_validation() -> np.ndarray:
-    """Read object truth only after vision output, for error validation."""
+    """读取物体真实坐标，仅用于视觉结果误差校验。
+
+返回：
+    物体世界坐标 shape=(3,)，单位 m。
+约束：
+    不参与检测或定位；必须在视觉坐标已经算完之后调用。
+重要性等级：A"""
     return base.DATA.qpos[
         base.OBJ_QADR : base.OBJ_QADR + 3
     ].copy()
@@ -1118,7 +1453,20 @@ def process_camera_frame(
     rgb: np.ndarray,
     depth: np.ndarray,
 ) -> np.ndarray:
-    """Process a frozen camera frame without reading object truth."""
+    """在冻结帧上执行检测、深度中位数滤波、反投影和误差验证。
+
+参数：
+    rgb: 已采集 RGB 帧，shape=(480,640,3)。
+    depth: 已采集深度帧，shape=(480,640)，单位 m。
+返回：
+    视觉估计的世界坐标 shape=(3,)，单位 m。
+异常：
+    未找到黄色目标、质心邻域无有效深度或误差大于 0.03 m 时抛 RuntimeError。
+关键参数：
+    质心周围取 5x5，过滤 NaN、0、负值和大于 10 m 的值后取中位数，降低边缘反光影响。
+并发：
+    可在线程池中运行；仅使用传入冻结帧和 VISION_LAST 中同一帧数据，主线程继续推进 CAR2 与仿真。
+重要性等级：A"""
     print("[VISION] processing frozen RGB/depth frame in worker thread")
     detection = detect_yellow_target(rgb)
     if detection is None:
@@ -1155,13 +1503,19 @@ def process_camera_frame(
 
 
 def get_vision_target_position() -> np.ndarray:
-    """Synchronous wrapper used by tests and diagnostics."""
+    """同步包装完整视觉管线，供测试和诊断使用。
+
+返回：
+    视觉估计的世界坐标 shape=(3,)，单位 m。
+异常：
+    get_camera_data 或 process_camera_frame 的错误原样传播。
+重要性等级：B"""
     rgb, depth = get_camera_data()
     return process_camera_frame(rgb, depth)
 
 
 # ---------------------------------------------------------------------------
-# Arm-side cooperative placement
+# 机械臂协同投放
 # ---------------------------------------------------------------------------
 def execute_cooperative_place(
     sim: base.Simulation,
@@ -1169,6 +1523,15 @@ def execute_cooperative_place(
     finger: base.FingerMotion,
     bucket_xy: np.ndarray,
 ) -> None:
+    """控制 CAR1 将抓取物移动到 CAR2 桶口并释放。
+
+参数：
+    bucket_xy: CAR2 屏蔽桶中心世界 XY，shape=(2,)，单位 m。
+副作用：
+    求解舒适投放姿态、推进机械臂/夹爪、打印释放站点。
+异常：
+    无合适姿态时由 choose_grasp_spin 抛 RuntimeError。
+重要性等级：A"""
     target_xy = np.asarray(bucket_xy, dtype=float)
     pre_drop = np.array([target_xy[0], target_xy[1], PRE_DROP_WORLD_Z])
     drop = np.array([target_xy[0], target_xy[1], DROP_WORLD_Z])
@@ -1196,6 +1559,12 @@ def _update_follower(
     follower: PathFollower | None,
     cars: list[CarController],
 ) -> None:
+    """若二号车路径控制器仍存在且未完成，则推进一帧。
+
+参数：
+    follower: 可空的 PathFollower。
+    cars: 车辆列表，供雷达和 viewer 更新。
+重要性等级：C"""
     if follower is not None and not follower.done:
         follower.update(cars)
 
@@ -1207,6 +1576,11 @@ def run_arm_motion_concurrent(
     cars: list[CarController],
     follower: PathFollower | None = None,
 ) -> None:
+    """推进机械臂运动，同时让二号车继续路径跟踪。
+
+关键时序：
+    arm.active 期间每帧先更新机械臂，再更新 follower，最后 sim.step。
+重要性等级：A"""
     while arm.active:
         arm.update(sim.dt)
         finger.hold()
@@ -1223,6 +1597,9 @@ def run_finger_motion_concurrent(
     cars: list[CarController],
     follower: PathFollower | None = None,
 ) -> None:
+    """推进夹爪开合，同时让二号车继续路径跟踪。
+
+重要性等级：A"""
     while finger.active:
         arm.hold()
         finger.update(sim.dt)
@@ -1240,6 +1617,13 @@ def run_wait_concurrent(
     duration: float,
     follower: PathFollower | None = None,
 ) -> None:
+    """保持机械臂与夹爪指定时长，同时允许二号车继续行驶。
+
+参数：
+    duration: 等待时间，单位 s。
+关键参数：
+    至少执行一步，避免零时长导致控制循环空转。
+重要性等级：B"""
     steps = max(1, int(round(duration / sim.dt)))
     for _ in range(steps):
         arm.hold()
@@ -1256,6 +1640,11 @@ def finish_follower(
     cars: list[CarController],
     follower: PathFollower,
 ) -> None:
+    """阻塞推进二号车路径直到完成。
+
+异常：
+    PathFollower.update 的超时异常原样传播。
+重要性等级：B"""
     while not follower.done:
         arm.hold()
         finger.hold()
@@ -1277,6 +1666,18 @@ def choose_grasp_spin(
     target_world: np.ndarray,
     candidates: tuple[float, ...] = GRASP_SPIN_CANDIDATES_DEG,
 ) -> float:
+    """在候选工具自旋角中寻找 IK 残差和关节舒适度最优值。
+
+参数：
+    target_world: 世界坐标目标，shape=(3,)，单位 m。
+    candidates: 候选绕工具 Z 轴旋转角，单位 deg。
+返回：
+    最优角度，单位 deg。
+异常：
+    最优位置残差超过 5 mm 时抛 RuntimeError。
+评分：
+    score=误差(mm)+10*舒适度，舒适度用关节归一化角的均方根近似。
+重要性等级：A"""
     target_fixed, _ = base.world_target_to_fixed(target_world)
     q_base = Rotation.from_quat(base.TARGET_QUAT, scalar_first=True)
     best_angle = 0.0
@@ -1311,7 +1712,20 @@ def find_optimal_car2_dock(
     car1_pos: np.ndarray,
     car1_yaw: float,
 ) -> tuple[np.ndarray, float, float]:
-    """Minimize arm-base-to-bucket distance under frame and IK constraints."""
+    """在硬约束下选择 CAR2 动态停靠点。
+
+参数：
+    car1_pos: CAR1 当前世界位置，shape=(3,)；只使用前两维计算。
+    car1_yaw: CAR1 当前偏航角，单位 rad。
+返回：
+    (candidate_xy, ik_error, comfort)，位置单位 m，残差单位 m。
+约束：
+    CAR2 车体与轮子不进入目标绿框，且与 CAR1 保持最小间距；同时以桶中心到机械臂底座距离和投放 IK 姿态评分。
+异常：
+    找不到合法停靠点时抛 RuntimeError。
+副作用：
+    候选评估会临时改动全局 DATA 并恢复。
+重要性等级：A"""
     car2_y = CAR2_DOCK_CENTER_Y
     dy = car2_y - car1_pos[1]
     min_offset = max(
@@ -1367,7 +1781,17 @@ def find_optimal_dock_for_predicted_pose(
     predicted_pos: np.ndarray,
     predicted_yaw: float,
 ) -> tuple[np.ndarray, float, float]:
-    """Evaluate dock IK using CAR1's future predicted chassis transform."""
+    """用 CAR1 预测位姿临时评估 CAR2 停靠点。
+
+参数：
+    car: CAR1 的 CarController。
+    predicted_pos: 预测世界位置，shape=(3,)，单位 m。
+    predicted_yaw: 预测偏航角，单位 rad。
+返回：
+    find_optimal_car2_dock 的 (位置, IK 残差, 舒适度)。
+副作用：
+    临时修改 CAR1 qpos/qvel 后必定恢复并 mj_forward。
+重要性等级：A"""
     saved_qpos = base.DATA.qpos[car.qadr : car.qadr + 7].copy()
     saved_qvel = base.DATA.qvel[car.dadr : car.dadr + 6].copy()
     base.DATA.qpos[car.qadr : car.qadr + 3] = [
@@ -1392,6 +1816,14 @@ def start_arm_world_flexible(
     duration: float,
     spin_deg: float,
 ) -> None:
+    """用指定工具自旋角启动世界坐标机械臂运动。
+
+参数：
+    arm: 机械臂控制器。
+    target_world: 世界目标位置，shape=(3,)，单位 m。
+    duration: 运动时长，单位 s。
+    spin_deg: 绕工具轴旋转角，单位 deg。
+重要性等级：A"""
     target_fixed, _ = base.world_target_to_fixed(target_world)
     q_base = Rotation.from_quat(base.TARGET_QUAT, scalar_first=True)
     quat = (
@@ -1409,6 +1841,16 @@ def execute_grasp_concurrent(
     target_pos: np.ndarray,
     follower: PathFollower | None,
 ) -> bool:
+    """执行 CAR1 接近、抓取、提升和收回，同时让 CAR2 继续行驶。
+
+参数：
+    target_pos: 视觉估计的物体世界位置，shape=(3,)，单位 m。
+    follower: 可空的 CAR2 路径控制器。
+返回：
+    True 表示物体高度比抓取目标高出 0.04 m，初步判定抓取成功。
+异常：
+    IK 不可达或姿态搜索失败时由底层抛 RuntimeError。
+重要性等级：A"""
     print("\n[GRASP] CAR1 arm starts while CAR2 continues driving")
     approach = np.array([target_pos[0], target_pos[1], base.APPROACH_WORLD_Z])
     grasp = np.array([target_pos[0], target_pos[1], base.GRASP_WORLD_Z])
@@ -1436,6 +1878,11 @@ def execute_grasp_concurrent(
 
 
 class DualCarMission:
+    """保存双车任务共享对象并执行完整协同状态机。
+
+数据流：
+    CAR1 雷达导航 -> 停车采图 -> 通知 CAR2 并行出发 -> 抓取 -> CAR2 动态停靠 -> 协同投放 -> 倒车脱离 -> 正向精准返航。
+重要性等级：A"""
     def __init__(
         self,
         sim: base.Simulation,
@@ -1446,6 +1893,12 @@ class DualCarMission:
         target_truth: np.ndarray,
         save_snapshots: bool,
     ) -> None:
+        """保存任务所需的仿真、机械臂、双车和目标真值。
+
+参数：
+    target_truth: 仅用于视觉结果误差验证的物体真值，shape=(3,)，单位 m。
+    save_snapshots: 是否在关键节点保存截图。
+重要性等级：A"""
         self.sim = sim
         self.arm = arm
         self.finger = finger
@@ -1456,6 +1909,13 @@ class DualCarMission:
         self.cars = [car1, car2]
 
     def inter_car_contacts(self) -> int:
+        """统计两车根刚体之间的当前物理接触数。
+
+返回：
+    接触对数量；0 表示当前没有车车接触。
+用途：
+    最终验收中检测是否发生物理穿模或碰撞。
+重要性等级：A"""
         car1_root = int(base.MODEL.body_rootid[self.car1.body_id])
         car2_root = int(base.MODEL.body_rootid[self.car2.body_id])
         count = 0
@@ -1472,6 +1932,15 @@ class DualCarMission:
         return count
 
     def run(self) -> bool:
+        """执行双车协同回收完整状态机。
+
+返回：
+    True 表示物体最终在桶内、两车回到目标初始位置且车车接触数为 0。
+副作用：
+    推进长时间仿真、打印阶段日志，并按配置保存关键截图。
+异常：
+    路径超时、视觉丢失、IK 不可达或物理状态发散时由子调用抛异常。
+重要性等级：A"""
         print("\n[阶段 1] 两车位于起点红线外侧，任务开始。")
         print(
             f"           CAR1={np.round(self.car1.pose()[0][:2], 2)}, "
@@ -1774,6 +2243,17 @@ def initialize_mission(seed: int | None) -> tuple[
     CarController,
     np.ndarray,
 ]:
+    """重置场景并随机生成放射物、初始化两车和控制器。
+
+参数：
+    seed: 随机种子；None 时每次运行随机，固定值用于可复现实验。
+返回：
+    (arm, finger, car1, car2, target_truth)。
+异常：
+    200 次采样仍无法找到远离障碍物的目标时抛 RuntimeError。
+副作用：
+    覆盖全局 DATA 状态和 SIM_TRUTH_TARGET，并设置两车初始位姿。
+重要性等级：A"""
     global SIM_TRUTH_TARGET
     arm, finger = base.setup_initial_state()
 
@@ -1868,6 +2348,17 @@ def initialize_mission(seed: int | None) -> tuple[
 
 
 def main() -> None:
+    """解析命令行参数并启动双车实时或离屏仿真。
+
+参数：
+    --headless: 无 viewer 执行。
+    --snapshot: 离屏运行并保存关键截图。
+    --seed: 可选随机种子。
+副作用：
+    初始化全局模型与任务，创建 viewer，运行完整任务。
+异常：
+    viewer 关闭产生 KeyboardInterrupt，由脚本入口捕获。
+重要性等级：A"""
     parser = argparse.ArgumentParser()
     parser.add_argument("--headless", action="store_true")
     parser.add_argument("--snapshot", action="store_true")

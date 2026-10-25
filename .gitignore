@@ -20,3 +20,27 @@ models/**/*.png
 .vscode/
 .idea/
 .DS_Store
+
+# Python tooling caches and build outputs
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+build/
+dist/
+*.egg-info/
+.ipynb_checkpoints/
+
+# Downloads and temporary files
+*.part
+*.tmp
+
+# Secrets: never commit credentials or private keys
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+credentials*
