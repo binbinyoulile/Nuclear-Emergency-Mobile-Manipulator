@@ -18,8 +18,10 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import random
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -77,6 +79,12 @@ RADIATION_EXIT_Y = 17.50
 CAR2_DOCK_CENTER_Y = TARGET_ZONE_Y_MIN - 0.60
 DOCK_OFFSET_MIN = 0.75
 DOCK_OFFSET_MAX = 1.00
+# 停靠点侧向余量，单位 m。
+# 视觉阶段只能用“预测的一号车位姿”，实测偏差可达 0.2 m；不留余量会让
+# 实际中心距跌破 CAR2_MIN_SEPARATION，二号车被自身安全间距规则卡在原地。
+DOCK_POSE_MARGIN = 0.20
+# 二号车先在停靠点正南这么远集结，再直线北上停靠，避免贴近一号车横向挪车。
+CAR2_STAGING_DY = 1.20
 DOCK_OFFSET_STEP = 0.01
 DOCK_COMFORT_WEIGHT = 10.0
 CAR2_MIN_SEPARATION = 0.82
@@ -95,6 +103,9 @@ LIDAR_CHANNELS = 16
 LIDAR_ELEV_MIN = np.deg2rad(-15.0)
 LIDAR_ELEV_MAX = np.deg2rad(15.0)
 LIDAR_MAX_RANGE = 100.0
+# ponytail: 6.5 m/s 的制动距离约 3.5 m，比这个 2.8 m 的警戒距离还长，绕行余量很小；
+# 调大检测距离会让长距离返航提前偏航（实测有 seed 跑到 y=28），需要先做
+# “速度—检测距离”联合标定，因此这里暂不单独修改。
 LIDAR_DETECT_RANGE = 2.8
 LIDAR_FRONT_HALF = np.deg2rad(30.0)
 LIDAR_SIDE_MAX = np.deg2rad(90.0)
@@ -102,8 +113,20 @@ LIDAR_REAR_HALF = np.deg2rad(30.0)
 LIDAR_VIS_RANGE = 8.0
 LIDAR_GEOMGROUP = np.array([1, 1, 0, 1, 0, 0], dtype=np.uint8)
 
+# 原地转向的轮速命令，单位 rad/s。
+# 实测 ±2.5 rad/s 低于轮胎静摩擦门限：四轮原地打滑、车身偏航只有 0.026 rad/s，
+# ±8.0 rad/s 时约为 1.32 rad/s，且横向滑移小；再高会明显平移离开对准点。
+SKID_TURN_WHEEL_SPEED = 8.0
+
+# 路径跟随允许的最大横摆角速度，单位 rad/s。
+# base.W_MAX 被本文件覆写成 20，等于取消限幅：5.3 m/s 时纯追踪会要求 7.6 rad/s，
+# 左右轮速差约 ±29 rad/s，实测直接把车甩飞（车体升到 0.59 m、落地悬空卡死）。
+MAX_YAW_RATE = 1.5
+
 SIM_TRUTH_TARGET = np.zeros(3, dtype=float)
 VISION_LAST: dict[str, np.ndarray] = {}
+# 调试开关：DUAL_TRACE=1 时按 0.25 s 输出路径跟随器内部状态。
+_TRACE = os.environ.get("DUAL_TRACE") == "1"
 
 
 def _id(obj_type, name: str) -> int:
@@ -253,7 +276,7 @@ class LidarScanner:
 返回：
     无显式返回值；更新 front/rear/left/right 距离以及 vis_points。
 关键参数：
-    LIDAR_DETECT_RANGE=2.8 m 决定导航警戒距离；LIDAR_VIS_RANGE 只影响画面展示。
+    LIDAR_DETECT_RANGE 决定导航警戒距离；LIDAR_VIS_RANGE 只影响画面展示。
 副作用：
     读取并刷新仿真派生状态，不推进物理时间。
 重要性等级：A"""
@@ -634,6 +657,7 @@ class PathFollower:
         self.avoid_side = 0
         self.avoid_start = 0.0
         self.avoid_stop_until = 0.0
+        self._pivot_dir = 0.0
         self.speed_cmd = 0.0
         self.frame_dt = float(
             base.MODEL.opt.timestep * base.STEPS_PER_FRAME
@@ -738,13 +762,22 @@ class PathFollower:
         if base.DATA.time - self.waypoint_start > self.waypoint_timeout:
             raise RuntimeError(
                 f"{car.name} waypoint {self.index + 1} timeout at "
-                f"({pos[0]:.3f}, {pos[1]:.3f}), yaw={yaw:.3f}"
+                f"({pos[0]:.3f}, {pos[1]:.3f}), yaw={yaw:.3f}, "
+                f"z={pos[2]:.3f}, speed={car.speed():.2f} m/s, "
+                f"target=({wx:.2f}, {wy:.2f})"
             )
 
         other_pos, _ = body_pose(car.other_body)
         separation = float(np.linalg.norm(pos[:2] - other_pos[:2]))
         car.min_other_separation = min(car.min_other_separation, separation)
-        if separation < CAR2_MIN_SEPARATION:
+        # 只有“开向目标会继续靠近另一辆车”时才倒车；否则即使当前距离偏近也要
+        # 允许继续前进，否则路过同伴时会被这条规则永久钉住。
+        to_goal_dir = np.array([dx, dy], dtype=float) / max(distance, 1e-6)
+        away_dir = (pos[:2] - other_pos[:2]) / max(separation, 1e-6)
+        closing_in = separation < CAR2_MIN_SEPARATION and float(
+            np.dot(to_goal_dir, away_dir)
+        ) < 0.2
+        if closing_in:
             alpha = base.wrap_angle(
                 float(np.arctan2(pos[1] - other_pos[1], pos[0] - other_pos[0]))
                 - yaw
@@ -756,6 +789,9 @@ class PathFollower:
             forward *= max(0.0, float(np.cos(alpha)))
             if abs(alpha) < np.deg2rad(95.0):
                 forward = max(forward, 0.15)
+
+        # 绕行偏置前的真实航向误差，用于判断要不要原地掉头。
+        heading_error = alpha
 
         if car.lidar.front_blocked:
             # 仅做局部避障：宏观目标方向始终指向终点。
@@ -773,8 +809,9 @@ class PathFollower:
                     self.avoid_start = base.DATA.time
                     side_name = "RIGHT" if self.avoid_side < 0 else "LEFT"
                     print(
-                        f"  [{car.name}] 2.8 m radar warning: obstacle "
-                        f"{car.lidar.front_min:.2f} m, local detour {side_name}"
+                        f"  [{car.name}] {LIDAR_DETECT_RANGE:.1f} m radar warning: "
+                        f"obstacle {car.lidar.front_min:.2f} m, "
+                        f"local detour {side_name}"
                     )
                 bias = np.deg2rad(55.0 if car.lidar.front_min < 1.0 else 35.0)
                 alpha = base.wrap_angle(alpha + self.avoid_side * bias)
@@ -791,6 +828,14 @@ class PathFollower:
             print(f"  [{car.name}] obstacle cleared: resume direct goal")
             self.avoid_active = False
             self.avoid_side = 0
+        elif car.lidar.front_blocked:
+            if not self.caution_logged:
+                print(
+                    f"  [{car.name}] adjacent obstacle "
+                    f"{car.lidar.front_min:.2f} m: radar caution, slow"
+                )
+                self.caution_logged = True
+            forward = min(forward, 1.40)
 
         # 平滑纵向速度曲线：长直线全速，转弯降速，接近终点按平方根曲线制动。
         if forward >= 0.0:
@@ -811,26 +856,37 @@ class PathFollower:
         )
         forward = self.speed_cmd
 
-        pivoting = abs(alpha) > np.deg2rad(80.0) and distance < 0.90
+        # 目标在侧后方时线速度会归零，纯转向又没有角速度权限，会永久卡死：
+        # 这里直接用高于静摩擦门限的差速原地转。
+        # >95° 时即使正在绕行也必须先掉头，否则 cos<0 让绕行也没有前进量。
+        pivoting = (
+            abs(heading_error) > np.deg2rad(95.0)
+            or (not self.avoid_active and abs(heading_error) > np.deg2rad(80.0))
+            # 车几乎停下时纯追踪给不出角速度，40° 以上偏差就会永远磨不过去。
+            or (forward < 0.30 and abs(heading_error) > np.deg2rad(45.0))
+        )
         terminal_straight = (
             self.index == len(self.path) - 1
             and distance < 0.50
-            and abs(alpha) < np.deg2rad(35.0)
+            and abs(heading_error) < np.deg2rad(35.0)
         )
-        if terminal_straight:
+        # 掉头优先级高于终点直行：两者可能同时成立（终点直行看的是绕行锁存航向），
+        # 若先走直行分支会把左右轮速同时写成 0，彻底卡死。
+        if not pivoting:
+            self._pivot_dir = 0.0
+        if pivoting:
+            # 目标正好在正后方时航向误差会在 ±π 之间跳变，若每帧重取符号会原地抖动，
+            # 因此进入掉头瞬间锁存方向。
+            if self._pivot_dir == 0.0:
+                self._pivot_dir = 1.0 if heading_error > 0.0 else -1.0
+            # 左右反向驱动原地转；轮速必须高于静摩擦门限（实测 ±2.5 rad/s 只打滑）。
+            left_target = -SKID_TURN_WHEEL_SPEED * self._pivot_dir
+            right_target = SKID_TURN_WHEEL_SPEED * self._pivot_dir
             steer_target = 0.0
-            yaw_rate = 0.0
+        elif terminal_straight:
+            steer_target = 0.0
             left_target = forward / base.WHEEL_RADIUS
             right_target = forward / base.WHEEL_RADIUS
-        elif pivoting:
-            yaw_rate = float(np.sign(alpha)) * 0.42
-            left_target = (
-                -yaw_rate * base.WHEEL_TRACK / 2.0
-            ) / base.WHEEL_RADIUS
-            right_target = (
-                yaw_rate * base.WHEEL_TRACK / 2.0
-            ) / base.WHEEL_RADIUS
-            steer_target = 0.0
         else:
             lookahead = float(np.clip(distance, 0.65, 1.80))
             steer_target = float(
@@ -847,7 +903,7 @@ class PathFollower:
                 if forward > 0.02
                 else 0.0
             )
-            yaw_rate = float(np.clip(yaw_rate, -base.W_MAX, base.W_MAX))
+            yaw_rate = float(np.clip(yaw_rate, -MAX_YAW_RATE, MAX_YAW_RATE))
             left_target = (
                 forward - yaw_rate * base.WHEEL_TRACK / 2.0
             ) / base.WHEEL_RADIUS
@@ -859,6 +915,24 @@ class PathFollower:
         car.right_cmd += base.COMMAND_RAMP * (right_target - car.right_cmd)
         car.steer_cmd += base.COMMAND_RAMP * (steer_target - car.steer_cmd)
         car.set_motion(car.left_cmd, car.right_cmd, car.steer_cmd)
+        if _TRACE and base.DATA.time - getattr(self, "_next_trace", 0.0) >= 0.25:
+            self._next_trace = base.DATA.time
+            print(
+                f"TRACE {car.name} t={base.DATA.time:6.2f} "
+                f"pos=({pos[0]:+.2f},{pos[1]:+.2f},{pos[2]:.2f}) "
+                f"yaw={yaw:+.2f} err={heading_error:+.2f} fwd={forward:+.2f} "
+                f"blocked={int(car.lidar.front_blocked)} "
+                f"fmin={car.lidar.front_min:.2f} "
+                f"avoid={int(self.avoid_active)} side={self.avoid_side:+.0f} "
+                f"pivot={int(pivoting)} term={int(terminal_straight)} "
+                f"cmd=({car.left_cmd:+.1f},{car.right_cmd:+.1f}) "
+                f"wq=["
+                + " ".join(
+                    f"{base.DATA.qvel[base.MODEL.jnt_dofadr[base.MODEL.actuator_trnid[a, 0]]]:+.1f}"
+                    for a in car.wheel_act
+                )
+                + f"] ncon={base.DATA.ncon}"
+            )
         return False
 
 
@@ -885,6 +959,7 @@ class SkidTurnFollower:
         self.start_time = base.DATA.time
         self.timeout = float(timeout)
         self.done = False
+        self._next_log = 0.5
         print(
             f"  [{car.name}] steering-assist turn to heading "
             f"{self.target_heading:.3f} rad"
@@ -917,10 +992,18 @@ class SkidTurnFollower:
             raise RuntimeError(f"{car.name} final heading alignment timeout")
 
         direction = 1.0 if error < 0.0 else -1.0
+        if base.DATA.time - self.start_time >= self._next_log:
+            self._next_log += 0.5
+            print(
+                f"    [align] t={base.DATA.time - self.start_time:.2f}s "
+                f"yaw={yaw:.3f} err={error:.3f} "
+                f"pos=({pos[0]:.3f}, {pos[1]:.3f}) dir={direction:+.0f}"
+            )
+        # 纯差速原地转：前轮不再转向。实测给前轮 -0.65 rad 反而削弱偏航（1.32 → 0.82 rad/s）。
         car.set_motion(
-            2.5 * direction,
-            -2.5 * direction,
-            -0.65 * direction,
+            SKID_TURN_WHEEL_SPEED * direction,
+            -SKID_TURN_WHEEL_SPEED * direction,
+            0.0,
         )
         return False
 
@@ -1907,6 +1990,8 @@ class DualCarMission:
         self.target_truth = target_truth
         self.save_snapshots = save_snapshots
         self.cars = [car1, car2]
+        # 回归矩阵使用的结构化指标；run() 逐阶段填充，失败时保留已完成部分。
+        self.metrics: dict[str, object] = {"stage": "init"}
 
     def inter_car_contacts(self) -> int:
         """统计两车根刚体之间的当前物理接触数。
@@ -1941,6 +2026,7 @@ class DualCarMission:
 异常：
     路径超时、视觉丢失、IK 不可达或物理状态发散时由子调用抛异常。
 重要性等级：A"""
+        self.metrics["stage"] = "1_start"
         print("\n[阶段 1] 两车位于起点红线外侧，任务开始。")
         print(
             f"           CAR1={np.round(self.car1.pose()[0][:2], 2)}, "
@@ -1948,6 +2034,7 @@ class DualCarMission:
             f"red_line_Y={RETURN_LINE_Y:.2f}"
         )
 
+        self.metrics["stage"] = "2_car1_navigate"
         print("\n[阶段 2] 一号车前往目标区，正在雷达避障...")
         print("[模块解耦] 移动控制阶段：仅使用雷达和底盘控制，不调用相机/Renderer。")
         self.car1.drive_path(
@@ -1962,12 +2049,15 @@ class DualCarMission:
         )
         observation_pos, observation_yaw = self.car1.pose()
 
+        self.metrics["stage"] = "3_vision_dock"
         print(
             f"\n[阶段 3] 一号车抵达停靠点，坐标 "
             f"({observation_pos[0]:.3f}, {observation_pos[1]:.3f})，通知二号车出发。"
         )
 
-        provisional_goal = np.array([0.84, CAR2_DOCK_CENTER_Y])
+        provisional_goal = np.array(
+            [0.84, CAR2_DOCK_CENTER_Y - CAR2_STAGING_DY]
+        )
         car2_follower = PathFollower(
             self.car2,
             [(float(provisional_goal[0]), float(provisional_goal[1]))],
@@ -1996,6 +2086,11 @@ class DualCarMission:
                 self.sim.step()
             target = future.result()
         vision_error = float(np.linalg.norm(target - self.target_truth))
+        self.metrics.update(
+            vision_error_mm=vision_error * 1000.0,
+            vision_target=target.tolist(),
+            truth_target=self.target_truth.tolist(),
+        )
         print("[模块解耦] 后台视觉完成；二号车运动期间仿真主循环未阻塞。")
 
         predicted_car1_pos = np.array(
@@ -2005,16 +2100,29 @@ class DualCarMission:
         dock_offset = max(
             DOCK_OFFSET_MIN,
             float(np.sqrt(max(CAR2_MIN_SEPARATION**2 - dock_dy**2, 0.0)))
-            + 0.02,
+            + DOCK_POSE_MARGIN,
         )
         car2_goal = np.array(
             [predicted_car1_pos[0] + dock_offset, CAR2_DOCK_CENTER_Y]
         )
-        car2_follower.replace_final_waypoint(
-            (float(car2_goal[0]), float(car2_goal[1]))
+        # 保留原来的集结航点（已验证的安全走廊），只在它之后追加：
+        # 先在同一纬度横移到停靠点正南，再直线北上，避免贴着另一辆车挪车。
+        car2_follower.append_path(
+            [
+                (
+                    float(car2_goal[0]),
+                    float(CAR2_DOCK_CENTER_Y - CAR2_STAGING_DY),
+                ),
+                (float(car2_goal[0]), float(car2_goal[1])),
+            ]
         )
         dock_ik_error = float("nan")
         dock_comfort = float("nan")
+        self.metrics.update(
+            car1_predicted_y=float(predicted_car1_pos[1]),
+            car2_goal=car2_goal.tolist(),
+            dock_offset=float(dock_offset),
+        )
 
         approach_xy = np.array([target[0], target[1] - 0.85], dtype=float)
         car1_align = PathFollower(
@@ -2053,6 +2161,7 @@ class DualCarMission:
         )
 
         grasp_start = base.DATA.time
+        self.metrics["stage"] = "4_grasp"
         grasp_success = execute_grasp_concurrent(
             self.sim,
             self.arm,
@@ -2063,6 +2172,7 @@ class DualCarMission:
         )
         if not grasp_success:
             raise RuntimeError("car1 failed to grasp the target cylinder")
+        self.metrics.update(grasp_ok=True, grasp_sim_start=float(grasp_start))
         print(
             f"\n[阶段 4] 一号车抓取成功，夹爪闭合。"
             f" 仿真时间 {base.DATA.time:.2f} s"
@@ -2071,9 +2181,19 @@ class DualCarMission:
         finish_follower(
             self.sim, self.arm, self.finger, self.cars, car2_follower
         )
+        # 停靠后把二号车摆正：纯追踪只在行进中转向，最后常留下 30~45° 残余偏航，
+        # 车身投影会变宽，直接顶到绿框边界；摆正后占用宽度回到 0.35 m。
+        car2_align = SkidTurnFollower(self.car2, CAR_START_YAW, timeout=6.0)
+        while not car2_align.done:
+            self.arm.hold()
+            self.finger.hold()
+            car2_align.update(self.cars)
+            update_user_scene(self.sim.viewer, self.cars)
+            self.sim.step()
         self.car2.stop_and_settle(
             self.sim, self.arm, self.finger, self.cars
         )
+        self.metrics["stage"] = "5_dock_check"
         car2_pos, car2_yaw = self.car2.pose()
         car1_pose, _ = self.car1.pose()
         car2_y_extent = (
@@ -2083,6 +2203,13 @@ class DualCarMission:
         car2_top_edge = float(car2_pos[1] + car2_y_extent)
         car2_outside_frame = car2_top_edge < TARGET_ZONE_Y_MIN
         separation = float(np.linalg.norm(car2_pos[:2] - car1_pose[:2]))
+        self.metrics.update(
+            car2_dock=[float(car2_pos[0]), float(car2_pos[1])],
+            car2_top_edge=car2_top_edge,
+            car2_outside_frame=bool(car2_outside_frame),
+            separation=separation,
+            min_separation=float(self.car2.min_other_separation),
+        )
         print(
             f"\n[阶段 5] 二号车已抵达动态停靠点，坐标 "
             f"({car2_pos[0]:.3f}, {car2_pos[1]:.3f})。"
@@ -2130,7 +2257,13 @@ class DualCarMission:
             raise RuntimeError(
                 f"cooperative drop failed, xy error={drop_xy_error:.4f} m"
             )
+        self.metrics.update(
+            drop_xy_error=drop_xy_error,
+            drop_inside=True,
+            obj_after_drop=obj_after_drop.tolist(),
+        )
 
+        self.metrics["stage"] = "6_return"
         print("\n[阶段 6] 投放完成，两车开始倒车/返航。")
         reverse_exit = [
             ReverseStraightFollower(self.car1, RADIATION_EXIT_Y, max_speed=0.55),
@@ -2189,6 +2322,7 @@ class DualCarMission:
             [car1_return, car2_return],
         )
 
+        self.metrics["stage"] = "7_acceptance"
         car1_final, _ = self.car1.pose()
         car2_final, _ = self.car2.pose()
         obj_final = base.DATA.qpos[
@@ -2210,6 +2344,18 @@ class DualCarMission:
             and both_home
         )
         contacts = self.inter_car_contacts()
+        self.metrics.update(
+            final_xy_error=final_xy_error,
+            final_inside=bool(final_inside),
+            contacts=int(contacts),
+            car1_final=[float(car1_final[0]), float(car1_final[1])],
+            car2_final=[float(car2_final[0]), float(car2_final[1])],
+            car1_home_error=car1_home_error,
+            car2_home_error=car2_home_error,
+            both_home=bool(both_home),
+            both_returned=bool(both_returned),
+            sim_time_s=float(base.DATA.time),
+        )
 
         if not both_returned:
             raise RuntimeError("one or both cars did not return behind the red line")
@@ -2234,6 +2380,7 @@ class DualCarMission:
                 135.0,
                 -38.0,
             )
+        self.metrics["stage"] = "done"
         return bool(final_inside and both_returned and contacts == 0)
 
 def initialize_mission(seed: int | None) -> tuple[
@@ -2347,6 +2494,40 @@ def initialize_mission(seed: int | None) -> tuple[
     return arm, finger, car1, car2, target
 
 
+def run_mission(
+    mission: "DualCarMission", seed: int | None, started: float
+) -> bool:
+    """执行任务并把结构化指标写成单行 RESULT_JSON。
+
+参数：
+    mission: 已构造的 DualCarMission。
+    seed: 本次随机种子，用于回归矩阵对齐。
+    started: 入口处记录的 perf_counter，用于统计真实耗时。
+返回：
+    任务成功布尔值；任何阶段抛异常时返回 False，并把异常记入 error 字段。
+副作用：
+    推进长时间仿真、打印阶段日志，最后打印一行 RESULT_JSON。
+重要性等级：A"""
+    try:
+        mission.run()
+    except KeyboardInterrupt:
+        raise
+    except Exception as exc:
+        print(f"\n[MISSION FAILED] {type(exc).__name__}: {exc}")
+        mission.metrics["error"] = f"{type(exc).__name__}: {exc}"
+
+    metrics = dict(mission.metrics)
+    metrics.update(
+        seed=seed,
+        wall_time_s=round(time.perf_counter() - started, 3),
+        sim_time_s=round(float(base.DATA.time), 3),
+        ok=metrics.get("stage") == "done",
+    )
+    metrics.setdefault("error", None)
+    print("RESULT_JSON: " + json.dumps(metrics, ensure_ascii=False, default=float))
+    return bool(metrics["ok"])
+
+
 def main() -> None:
     """解析命令行参数并启动双车实时或离屏仿真。
 
@@ -2355,7 +2536,7 @@ def main() -> None:
     --snapshot: 离屏运行并保存关键截图。
     --seed: 可选随机种子。
 副作用：
-    初始化全局模型与任务，创建 viewer，运行完整任务。
+    初始化全局模型与任务，创建 viewer，运行完整任务；成功退出码 0，失败退出码 1。
 异常：
     viewer 关闭产生 KeyboardInterrupt，由脚本入口捕获。
 重要性等级：A"""
@@ -2365,6 +2546,7 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=None)
     args = parser.parse_args()
 
+    started = time.perf_counter()
     print(f"scene: {base.MOBILE_SCENE}")
     print(f"model: nq={base.MODEL.nq} nv={base.MODEL.nv} nu={base.MODEL.nu}")
     arm, finger, car1, car2, target = initialize_mission(args.seed)
@@ -2385,8 +2567,8 @@ def main() -> None:
             sim, arm, finger, car1, car2, target,
             save_snapshots=args.snapshot,
         )
-        mission.run()
-        return
+        ok = run_mission(mission, args.seed, started)
+        raise SystemExit(0 if ok else 1)
 
     import mujoco.viewer
 
@@ -2401,11 +2583,12 @@ def main() -> None:
         mission = DualCarMission(
             sim, arm, finger, car1, car2, target, save_snapshots=False
         )
-        mission.run()
+        ok = run_mission(mission, args.seed, started)
         print("Mission complete. Close viewer to exit.")
         while viewer.is_running():
             viewer.sync()
             time.sleep(0.02)
+        raise SystemExit(0 if ok else 1)
 
 
 if __name__ == "__main__":

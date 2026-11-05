@@ -81,6 +81,7 @@ mobile_manipulator/
 ├── arm_ik_scene.xml         # 机械臂 IK 辅助场景
 ├── models/                  # 自建 MJCF；二进制 mesh 由脚本下载
 ├── scripts/fetch_models.py  # Menagerie 资产下载脚本
+├── scripts/run_matrix.py    # 多 seed 回归矩阵（CSV + 每 seed 日志）
 ├── docs/screenshots/        # 4 张核心展示截图
 ├── requirements.txt
 ├── setup.ps1
@@ -103,14 +104,27 @@ mobile_manipulator/
 3. `pixel_to_world()`：深度中位数、针孔相机反投影和 `cam_xpos/cam_xmat` 外参变换；ROS2 中使用 `tf2_ros`。
 4. 任务状态机：仅使用视觉返回坐标执行抓取，真实物体坐标只用于误差验证。
 
-## 验证基线
+## 多 seed 回归与验证基线
 
-`--snapshot --seed 7` 的基准结果：
+单次成功不能说明可靠性，因此每次改动后跑同一组种子：
 
-- D435i 视觉坐标误差：约 `9.03 mm`
-- 圆柱最终桶内 XY 误差：约 `0.0142 m`
-- 两车物理接触：`0`
-- 回起点误差：CAR1 约 `0.086 m`，CAR2 约 `0.099 m`
+```powershell
+D:\Python313\python.exe .\scripts\run_matrix.py --seeds 0-20
+```
+
+脚本逐个起 `--headless` 子进程（不覆写截图），单种子超时保护，把指标写入
+`reports/regression.csv`、每个种子的完整日志写入 `reports/logs/seed_<n>.log`。
+任务本身在成功/失败时都会打印一行 `RESULT_JSON:` 并以退出码 `0`/`1` 结束，
+失败时 `stage` 字段直接指出卡在哪个阶段。
+
+`seed 0–20`（21 个）当前基线：
+
+- 通过率：`21/21`
+- D435i 视觉坐标误差：`8.2 ~ 10.1 mm`
+- 桶内 XY 误差：`0.005 ~ 0.022 m`（容差 `0.05 m`）
+- 两车最小中心距：`0.878 ~ 1.063 m`（安全阈值 `0.82 m`），物理接触 `0`
+- 回起点误差：CAR1 `0.085 ~ 0.086 m`，CAR2 `0.079 ~ 0.099 m`（阈值 `0.20 m`）
+- 单次仿真时长：`51.9 ~ 68.0 s`
 
 ## 跨平台路径
 
