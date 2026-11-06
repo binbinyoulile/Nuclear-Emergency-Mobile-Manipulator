@@ -47,12 +47,14 @@ base.COMMAND_RAMP = 0.35
 # ---------------------------------------------------------------------------
 # 任务几何布局
 # ---------------------------------------------------------------------------
-TARGET_ZONE_X_MIN = -1.00
-TARGET_ZONE_X_MAX = 1.00
-TARGET_ZONE_Y_MIN = 20.50
-TARGET_ZONE_Y_MAX = 21.50
-OBJECT_X_RANGE = (-0.70, 0.70)
-OBJECT_Y_RANGE = (20.65, 21.35)
+# 目标区按 UR10e 工作空间收紧：车停在 (x, y-0.85)，抓取点只有 0.94 m 远
+# （水平 0.85 + 垂直 0.39，臂展 1.3 m，约 72%），横向摆动也从 ±0.70 收到 ±0.28。
+TARGET_ZONE_X_MIN = -0.35
+TARGET_ZONE_X_MAX = 0.35
+TARGET_ZONE_Y_MIN = 20.70
+TARGET_ZONE_Y_MAX = 21.30
+OBJECT_X_RANGE = (-0.28, 0.28)
+OBJECT_Y_RANGE = (20.78, 21.22)
 OBJECT_Z = 0.01
 
 CAR1_START = np.array([-0.70, -1.00])
@@ -868,8 +870,8 @@ class PathFollower:
         )
         terminal_straight = (
             self.index == len(self.path) - 1
-            and distance < 0.50
-            and abs(heading_error) < np.deg2rad(35.0)
+            and distance < 0.80
+            and abs(heading_error) < np.deg2rad(50.0)
         )
         # 掉头优先级高于终点直行：两者可能同时成立（终点直行看的是绕行锁存航向），
         # 若先走直行分支会把左右轮速同时写成 0，彻底卡死。
@@ -899,6 +901,12 @@ class PathFollower:
             steer_target = float(
                 np.clip(steer_target, -base.STEER_MAX, base.STEER_MAX)
             )
+            # 最后 1.1 m 内把方向盘平滑回正：否则低速误差会让前轮来回打方向，
+            # 车体被惯性带着侧滑抖动（用户观察到的"揉库"）。
+            if self.index == len(self.path) - 1:
+                steer_target *= float(
+                    np.clip((distance - 0.30) / 0.80, 0.0, 1.0)
+                )
             yaw_rate = (
                 forward * float(np.tan(steer_target)) / base.STEER_WHEELBASE
                 if forward > 0.02
@@ -927,6 +935,7 @@ class PathFollower:
                 f"avoid={int(self.avoid_active)} side={self.avoid_side:+.0f} "
                 f"pivot={int(pivoting)} term={int(terminal_straight)} "
                 f"cmd=({car.left_cmd:+.1f},{car.right_cmd:+.1f}) "
+                f"st={car.steer_cmd:+.2f} "
                 f"wq=["
                 + " ".join(
                     f"{base.DATA.qvel[base.MODEL.jnt_dofadr[base.MODEL.actuator_trnid[a, 0]]]:+.1f}"
@@ -981,7 +990,9 @@ class SkidTurnFollower:
         car = self.car
         pos, yaw = car.pose()
         error = base.wrap_angle(self.target_heading - yaw)
-        if abs(error) <= np.deg2rad(2.0):
+        # 航向容差放宽到 6°：抓取与投放都用世界坐标解 IK，几度偏差不影响可达性，
+        # 却能让车少做一次原地"揉库"。
+        if abs(error) <= np.deg2rad(6.0):
             self.done = True
             car.set_motion(0.0, 0.0, 0.0)
             print(
@@ -1767,10 +1778,12 @@ def choose_grasp_spin(
 异常：
     最优位置残差超过 5 mm 时抛 RuntimeError。
 评分：
-    score=误差(mm)+10*舒适度，舒适度用关节归一化角的均方根近似。
+    score=误差(mm)+10*舒适度+3*关节位移，舒适度用关节归一化角的均方根近似；
+    关节位移项让同样可达时优先选离当前姿态最近的解。
 重要性等级：A"""
     target_fixed, _ = base.world_target_to_fixed(target_world)
     q_base = Rotation.from_quat(base.TARGET_QUAT, scalar_first=True)
+    q_now = base.DATA.qpos[base.ARM_QADR].copy()
     best_angle = 0.0
     best_error = float("inf")
     best_comfort = float("inf")
@@ -1779,9 +1792,13 @@ def choose_grasp_spin(
         q_candidate = (
             q_base * Rotation.from_euler(GRASP_SPIN_AXIS, np.deg2rad(angle_deg))
         ).as_quat(scalar_first=True)
-        q_solution, error = base.solve_ik_fixed(target_fixed, q_candidate)
+        q_solution, error = base.solve_ik_fixed(
+            target_fixed, q_candidate, seed_q=q_now
+        )
         comfort = float(np.sqrt(np.mean((q_solution / np.pi) ** 2)))
-        score = error * 1000.0 + 10.0 * comfort
+        # 关节位移惩罚：同样可达时优先选离当前姿态最近的解，减少甩臂。
+        travel = float(np.mean(np.abs(q_solution - q_now)))
+        score = error * 1000.0 + 10.0 * comfort + 3.0 * travel
         if score < best_score:
             best_score = score
             best_error = error

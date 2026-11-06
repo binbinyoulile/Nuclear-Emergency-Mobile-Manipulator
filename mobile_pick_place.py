@@ -252,7 +252,9 @@ OBJ_QADR = int(MODEL.jnt_qposadr[OBJ_JOINT])
 # 固定基座 IK 求解器，复用于移动底盘上的机械臂
 # ---------------------------------------------------------------------------
 IK_POSTURE_COST = np.zeros(IK_MODEL.nv)
-IK_POSTURE_COST[:6] = 0.005
+# 关节位移惩罚：以“当前关节角”为目标而非固定 HOME，配合 solve_ik_fixed 的 seed_q，
+# 强制 IK 选择离当前姿态最近、关节变化最小的解，避免投放时甩大圈。
+IK_POSTURE_COST[:6] = 0.02
 
 
 _ik_probe = mujoco.MjData(IK_MODEL)
@@ -265,6 +267,7 @@ TARGET_ROT = Rotation.from_quat(TARGET_QUAT, scalar_first=True).as_matrix()
 def solve_ik_fixed(
     target_pos: np.ndarray,
     target_quat: np.ndarray = TARGET_QUAT,
+    seed_q: np.ndarray | None = None,
 ) -> tuple[np.ndarray, float]:
     """在固定基座 IK 模型中求解 6 轴机械臂关节角。
 
@@ -282,8 +285,9 @@ def solve_ik_fixed(
 排查：
     残差异常大时先确认目标是否在可达空间，再检查 frame_name、四元数顺序和姿态约束。
 重要性等级：A"""
+    seed = HOME_QPOS if seed_q is None else np.asarray(seed_q, dtype=float)[:6]
     tmp = mujoco.MjData(IK_MODEL)
-    tmp.qpos[:6] = HOME_QPOS
+    tmp.qpos[:6] = seed
     tmp.qpos[6:8] = 0.0
     mujoco.mj_forward(IK_MODEL, tmp)
 
@@ -298,7 +302,7 @@ def solve_ik_fixed(
     )
     posture = mink.PostureTask(IK_MODEL, cost=IK_POSTURE_COST)
     posture_target = tmp.qpos.copy()
-    posture_target[:6] = HOME_QPOS
+    posture_target[:6] = seed
     posture.set_target(posture_target)
 
     quat = np.asarray(target_quat, dtype=float)
@@ -429,7 +433,11 @@ class ArmMotion:
 异常：
     不可达目标通常表现为较大残差，而不是直接抛异常。
 重要性等级：A"""
-        q_target, error = solve_ik_fixed(target_pos_fixed, target_quat)
+        # 以当前关节角作为 IK 种子：相邻目标（预投放→投放→收回）落在同一解支，
+        # 插值路径不会跨解支甩大圈。
+        q_target, error = solve_ik_fixed(
+            target_pos_fixed, target_quat, seed_q=DATA.qpos[ARM_QADR]
+        )
         self.q_start = DATA.qpos[ARM_QADR].copy()
         self.q_target = q_target
         self.q_hold = q_target.copy()

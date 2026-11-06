@@ -32,18 +32,19 @@
           pos="0 0 0.006" material="start_line_mat"
           contype="0" conaffinity="0" />
 
-    <!-- Target rectangle: 2 m x 1 m, X -1..1 m, Y 20.5..21.5 m. -->
-    <geom name="target_zone_x_min" type="box" size="0.018 0.50 0.006"
-          pos="-1.00 21.00 0.006" material="target_zone_mat"
+    <!-- Target rectangle: 0.70 m x 0.60 m, X -0.35..0.35 m, Y 20.70..21.30 m.
+         与 dual_car_pick_place.py 的 TARGET_ZONE_* 常量一一对应。 -->
+    <geom name="target_zone_x_min" type="box" size="0.018 0.30 0.006"
+          pos="-0.35 21.00 0.006" material="target_zone_mat"
           contype="0" conaffinity="0" />
-    <geom name="target_zone_x_max" type="box" size="0.018 0.50 0.006"
-          pos="1.00 21.00 0.006" material="target_zone_mat"
+    <geom name="target_zone_x_max" type="box" size="0.018 0.30 0.006"
+          pos="0.35 21.00 0.006" material="target_zone_mat"
           contype="0" conaffinity="0" />
-    <geom name="target_zone_y_min" type="box" size="1.00 0.018 0.006"
-          pos="0 20.50 0.006" material="target_zone_mat"
+    <geom name="target_zone_y_min" type="box" size="0.35 0.018 0.006"
+          pos="0 20.70 0.006" material="target_zone_mat"
           contype="0" conaffinity="0" />
-    <geom name="target_zone_y_max" type="box" size="1.00 0.018 0.006"
-          pos="0 21.50 0.006" material="target_zone_mat"
+    <geom name="target_zone_y_max" type="box" size="0.35 0.018 0.006"
+          pos="0 21.30 0.006" material="target_zone_mat"
           contype="0" conaffinity="0" />
 
     <!-- Six sparse obstacles in the long transit corridor Y=5..15 m. -->
