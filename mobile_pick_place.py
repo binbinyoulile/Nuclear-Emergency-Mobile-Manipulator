@@ -100,14 +100,14 @@ RETRACT_TIME = 2.0
 FINAL_SETTLE_TIME = 2.0
 CHASSIS_SETTLE_TIME = 1.2
 
-# 底盘 P 控制器
+# 底盘 P 控制器（几何与 dual_mobile_ur10e.xml 一致：轮距 0.555 m、轴距 0.50 m）
 WHEEL_RADIUS = 0.1525
-WHEEL_TRACK = 0.59
+WHEEL_TRACK = 0.555
 K_POS = 1.20
 V_MAX = 0.80
 W_MAX = 1.00
 POS_TOL = 0.03
-STEER_WHEELBASE = 0.585
+STEER_WHEELBASE = 0.50
 STEER_MAX = 0.70
 COMMAND_RAMP = 0.12
 YAW_TOL = 0.03
@@ -586,17 +586,18 @@ def set_wheel_velocity(left: float, right: float, steer: float = 0.0) -> None:
 参数：
     left: 左侧两轮角速度指令，单位 rad/s。
     right: 右侧两轮角速度指令，单位 rad/s。
-    steer: 前轮转向角指令，单位 rad。
+    steer: 兼容旧接口的转向角；四轮差速转向模型下被忽略。
 关键参数：
-    前轮也必须保持滚动速度；只转向而把速度设零会触发执行器制动，导致打滑。
+    前轮也必须保持滚动速度；只给转向而不给轮速会让执行器互相制动，导致打滑。
 副作用：
-    写入五个底盘相关执行器。
+    写入四个轮速执行器。
 重要性等级：A"""
     DATA.ctrl[WHEEL_ACT["wheel_fl_joint"]] = left
     DATA.ctrl[WHEEL_ACT["wheel_fr_joint"]] = right
     DATA.ctrl[WHEEL_ACT["wheel_rl_joint"]] = left
     DATA.ctrl[WHEEL_ACT["wheel_rr_joint"]] = right
-    DATA.ctrl[WHEEL_STEER_ACT] = steer
+    if WHEEL_STEER_ACT.size:
+        DATA.ctrl[WHEEL_STEER_ACT] = steer
 
 
 def chassis_pose() -> tuple[np.ndarray, float]:

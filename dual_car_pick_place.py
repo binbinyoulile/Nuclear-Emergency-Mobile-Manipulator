@@ -536,7 +536,8 @@ class CarController:
 重要性等级：A"""
         base.DATA.ctrl[self.wheel_act[[0, 2]]] = left
         base.DATA.ctrl[self.wheel_act[[1, 3]]] = right
-        base.DATA.ctrl[self.steer_act] = steer
+        if self.steer_act.size:
+            base.DATA.ctrl[self.steer_act] = steer
 
     def stop_and_settle(
         self,
@@ -997,7 +998,14 @@ class SkidTurnFollower:
             print(
                 f"    [align] t={base.DATA.time - self.start_time:.2f}s "
                 f"yaw={yaw:.3f} err={error:.3f} "
-                f"pos=({pos[0]:.3f}, {pos[1]:.3f}) dir={direction:+.0f}"
+                f"pos=({pos[0]:.3f}, {pos[1]:.3f}) z={pos[2]:.3f} "
+                f"dir={direction:+.0f} "
+                f"wq=["
+                + " ".join(
+                    f"{base.DATA.qvel[base.MODEL.jnt_dofadr[base.MODEL.actuator_trnid[a, 0]]]:+.1f}"
+                    for a in car.wheel_act
+                )
+                + f"] ncon={base.DATA.ncon}"
             )
         # 纯差速原地转：前轮不再转向。实测给前轮 -0.65 rad 反而削弱偏航（1.32 → 0.82 rad/s）。
         car.set_motion(
@@ -2197,8 +2205,8 @@ class DualCarMission:
         car2_pos, car2_yaw = self.car2.pose()
         car1_pose, _ = self.car1.pose()
         car2_y_extent = (
-            abs(np.sin(car2_yaw)) * 0.445
-            + abs(np.cos(car2_yaw)) * 0.35
+            abs(np.sin(car2_yaw)) * 0.456
+            + abs(np.cos(car2_yaw)) * 0.355
         )
         car2_top_edge = float(car2_pos[1] + car2_y_extent)
         car2_outside_frame = car2_top_edge < TARGET_ZONE_Y_MIN

@@ -87,12 +87,13 @@
   </worldbody>
 
   <actuator>
-    
+    <!-- 四轮独立驱动 + 四轮差速转向：没有转向执行器，yaw 只由左右轮速差产生。 -->
     <velocity name="wheel_fl_act" joint="wheel_fl_joint" kv="45" ctrlrange="-70 70" forcerange="-180 180" />
     <velocity name="wheel_fr_act" joint="wheel_fr_joint" kv="45" ctrlrange="-70 70" forcerange="-180 180" />
     <velocity name="wheel_rl_act" joint="wheel_rl_joint" kv="45" ctrlrange="-70 70" forcerange="-180 180" />
     <velocity name="wheel_rr_act" joint="wheel_rr_joint" kv="45" ctrlrange="-70 70" forcerange="-180 180" />
 
+    <!-- 等效前轮转向：真车是四轮差速转向，控制器沿用转向角 + 轮速差，见 XML 注释。 -->
     <position name="wheel_fl_steer_act" joint="wheel_fl_steer_joint" kp="800" kv="40" ctrlrange="-0.7 0.7" forcerange="-120 120" />
     <position name="wheel_fr_steer_act" joint="wheel_fr_steer_joint" kp="800" kv="40" ctrlrange="-0.7 0.7" forcerange="-120 120" />
 
