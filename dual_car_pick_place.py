@@ -78,7 +78,11 @@ CAR2_RETURN_LANE_PATH = [
 CAR1_RETURN_Y = -3.00
 CAR2_RETURN_Y = -3.00
 RADIATION_EXIT_Y = 17.50
-CAR2_DOCK_CENTER_Y = TARGET_ZONE_Y_MIN - 0.60
+# 二号车停靠中心 Y：绿框下边界再往南 0.64 m。
+# 车体在任意朝向下投影最大 0.578 m（0.912×0.710 的车斜着放最宽），留 0.06 m 余量，
+# 这样即使纯追踪到点留下十几度残余偏航，车身上沿也越不过 TARGET_ZONE_Y_MIN；
+# 不再需要靠停靠后原地转摆正来"压窄"车身投影。
+CAR2_DOCK_CENTER_Y = TARGET_ZONE_Y_MIN - 0.64
 DOCK_OFFSET_MIN = 0.75
 DOCK_OFFSET_MAX = 1.00
 # 停靠点侧向余量，单位 m。
@@ -2267,7 +2271,7 @@ class DualCarMission:
             self.cars,
             snapshot_name=None,
             waypoint_timeout=32.0,
-            final_tolerance=0.07,
+            final_tolerance=0.05,
             max_speed=6.50,
         )
         print("[并发调度] 二号车已收到出发指令，开始连续前往目标区。")
@@ -2384,31 +2388,16 @@ class DualCarMission:
         finish_follower(
             self.sim, self.arm, self.finger, self.cars, car2_follower
         )
-        # 停靠后把二号车摆正：纯追踪只在行进中转向，最后常留下几十度的残余偏航，
-        # 车身投影会变宽，可能顶到绿框边界。摆正只转实际差的那几度（方向锁存、
-        # 越过目标即停），并且带轮速斜坡，避免起停各一帧造成的抽动。
-        # 偏航超过 60° 时不原地转：那个角度的原地转在真实场地里既慢又危险，而车身
-        # 投影在最坏朝向下也只有 0.578 m，配停靠点 Y≈20.05 仍在绿框外侧（20.70）。
+        # 停靠后不再原地转摆正：纯追踪只在行进中转向，到点可能留几度残余偏航，
+        # 但差速原地转在地面上是"轮胎打滑"——实测只为补正 3° 就把车整体滑移了 2 cm，
+        # 而且正好发生在机械臂准备投放、车身必须绝对静止的时刻（用户看到的"动一下"）。
+        # 车身投影在最坏朝向下也只有 0.578 m，配停靠点 Y≈20.05 仍在绿框 20.70 外侧，
+        # 所以这点残余偏航直接留着，不做原地转。
         _, car2_yaw_now = self.car2.pose()
         align_error = abs(base.wrap_angle(CAR_START_YAW - car2_yaw_now))
-        if align_error <= np.deg2rad(60.0):
-            car2_align = SkidTurnFollower(
-                self.car2,
-                CAR_START_YAW,
-                timeout=6.0,
-                ramp_time=SKID_TURN_SPINDOWN_TIME,
-            )
-            while not car2_align.done:
-                self.arm.hold()
-                self.finger.hold()
-                car2_align.update(self.cars)
-                update_user_scene(self.sim.viewer, self.cars)
-                self.sim.step()
-        else:
-            print(
-                f"  [CAR2] 残余偏航 {np.rad2deg(align_error):.0f}° 超过 60°，"
-                f"不原地转，保持当前朝向入位"
-            )
+        print(
+            f"  [CAR2] 停靠残余偏航 {np.rad2deg(align_error):.1f}°（保持，不原地转）"
+        )
         self.car2.stop_and_settle(
             self.sim, self.arm, self.finger, self.cars
         )
