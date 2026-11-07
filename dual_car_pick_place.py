@@ -129,6 +129,44 @@ SIM_TRUTH_TARGET = np.zeros(3, dtype=float)
 VISION_LAST: dict[str, np.ndarray] = {}
 # 调试开关：DUAL_TRACE=1 时按 0.25 s 输出路径跟随器内部状态。
 _TRACE = os.environ.get("DUAL_TRACE") == "1"
+# 调试开关：DUAL_WATCH=1 时按 0.25 s 输出等待中车辆的底盘速度与接触数。
+_WATCH = os.environ.get("DUAL_WATCH") == "1"
+
+
+def _watch_waiting_car(sim: base.Simulation, cars: list["CarController"]) -> None:
+    """采样等待中车辆的底盘线速度、轮速指令与接触数（仅调试用）。
+
+参数：
+    sim: 仿真封装，用于取时间步。
+    cars: 车辆列表，取第二辆（等待中的二号车）。
+重要性等级：C"""
+    car = cars[1]
+    vlin = base.DATA.qvel[car.dadr : car.dadr + 2]
+    vrot = base.DATA.qvel[car.dadr + 3 : car.dadr + 6]
+    acc = getattr(car, "_watch", None) or {
+        "v": 0.0, "r": 0.0, "w": 0.0, "t": base.DATA.time
+    }
+    acc["v"] = max(acc["v"], float(np.linalg.norm(vlin)))
+    acc["r"] = max(acc["r"], float(np.linalg.norm(vrot)))
+    acc["w"] = max(
+        acc["w"],
+        float(np.max(np.abs([
+            base.DATA.qvel[base.MODEL.jnt_dofadr[base.MODEL.actuator_trnid[a, 0]]]
+            for a in car.wheel_act
+        ]))),
+    )
+    car._watch = acc
+    if base.DATA.time - acc["t"] < 0.5:
+        return
+    print(
+        f"WATCH {car.name} t={base.DATA.time:6.2f} "
+        f"max|v|={acc['v']:.6f} max|w_rot|={acc['r']:.6f} "
+        f"max|wq|={acc['w']:.4f} ncon={base.DATA.ncon}"
+    )
+    acc["v"] = 0.0
+    acc["r"] = 0.0
+    acc["w"] = 0.0
+    acc["t"] = base.DATA.time
 
 
 def _id(obj_type, name: str) -> int:
@@ -260,6 +298,9 @@ class LidarScanner:
         self.left_min = float("inf")
         self.right_min = float("inf")
         self.rear_min = float("inf")
+        # 整个后半平面（|azimuth| > 90°）的最近回波。车头雷达本身就是 360°，
+        # 只统计 ±30° 会看不到斜后方来车，倒车时存在盲区。
+        self.rear_clear = float("inf")
         self.vis_points: list[np.ndarray] = []
         self.front_points: list[np.ndarray] = []
 
@@ -326,6 +367,7 @@ class LidarScanner:
         left_min = float("inf")
         right_min = float("inf")
         rear_min = float("inf")
+        rear_clear = float("inf")
         for idx in range(nray):
             distance = float(distances[idx])
             geom_id = int(geomid[idx])
@@ -356,6 +398,8 @@ class LidarScanner:
             if distance <= LIDAR_DETECT_RANGE:
                 if abs(az) >= np.pi - LIDAR_REAR_HALF:
                     rear_min = min(rear_min, distance)
+                if abs(az) > np.pi / 2.0:
+                    rear_clear = min(rear_clear, distance)
                 if LIDAR_FRONT_HALF < az <= LIDAR_SIDE_MAX:
                     left_min = min(left_min, distance)
                 elif -LIDAR_SIDE_MAX <= az < -LIDAR_FRONT_HALF:
@@ -373,6 +417,7 @@ class LidarScanner:
         self.left_min = left_min
         self.right_min = right_min
         self.rear_min = rear_min
+        self.rear_clear = rear_clear
         self.front_blocked = front_min <= LIDAR_DETECT_RANGE
         self.last_scan_time = base.DATA.time
 
@@ -1074,9 +1119,14 @@ class ReverseStraightFollower:
         self.target_y = float(target_y)
         self.max_speed = float(max_speed)
         self.done = False
+        start_pos, start_yaw = car.pose()
+        # 锁定起步时的车道与朝向：倒车若只“沿车头方向”走，3~5° 的航向残差
+        # 在 2.4 m 行程上会横向漂 0.2 m，两车会互相逼近。
+        self.lane_x = float(start_pos[0])
+        self.base_heading = float(start_yaw)
         print(
             f"  [{car.name}] straight reverse to Y={self.target_y:.2f}, "
-            f"heading={car.pose()[1]:.3f} rad"
+            f"heading={start_yaw:.3f} rad, lane_x={self.lane_x:.3f}"
         )
 
     def update(self, cars: list[CarController]) -> bool:
@@ -1103,16 +1153,52 @@ class ReverseStraightFollower:
                 f"({pos[0]:.3f}, {pos[1]:.3f})"
             )
             return True
+
+        # 车尾净空：用后半平面回波（含斜后方），并额外确认与另一辆车的距离，
+        # 避免只盯 ±30° 车尾扇区而漏掉并排倒车的同伴。
+        clearance = min(car.lidar.rear_clear, car.lidar.rear_min)
+        other_pos, _ = body_pose(car.other_body)
+        gap = float(np.linalg.norm(pos[:2] - other_pos[:2]))
+        previous_gap = getattr(car, "_reverse_gap", None)
+        car._reverse_gap = gap
+        # 只有“距离在缩小”才停，避免两车都停住互相等待导致超时。
+        closing = previous_gap is not None and gap < previous_gap - 1e-4
         speed = -self.max_speed
-        if car.lidar.rear_min < 1.20:
+        if clearance < 1.20:
             speed = max(speed, -0.28)
-        if car.lidar.rear_min < 0.50:
+        if clearance < 0.60:
             speed = 0.0
+        if gap < 0.85 and closing:
+            speed = 0.0
+        elif gap < 1.05:
+            speed = max(speed, -0.35)
         wheel = speed / base.WHEEL_RADIUS
+        # 车道保持：航向残差 + 横向偏差折算成期望横摆角速度，再用前轮转角实现。
+        # 低速小差速低于轮胎静摩擦门限（实测差速 ±0.7 rad/s 只有 1.6% 的转向效果），
+        # 所以这里走转向角而不是轮速差。
+        heading_err = base.wrap_angle(self.base_heading - yaw)
+        lateral_err = self.lane_x - pos[0]
+        yaw_cmd = float(
+            np.clip(1.5 * heading_err + 1.2 * lateral_err, -0.30, 0.30)
+        )
+        tan_steer = (
+            yaw_cmd * base.STEER_WHEELBASE / speed
+            if abs(speed) > 0.05
+            else 0.0
+        )
+        steer_target = float(np.clip(np.arctan(tan_steer), -0.45, 0.45))
         car.left_cmd += base.COMMAND_RAMP * (wheel - car.left_cmd)
         car.right_cmd += base.COMMAND_RAMP * (wheel - car.right_cmd)
-        car.steer_cmd += base.COMMAND_RAMP * (0.0 - car.steer_cmd)
+        car.steer_cmd += base.COMMAND_RAMP * (steer_target - car.steer_cmd)
         car.set_motion(car.left_cmd, car.right_cmd, car.steer_cmd)
+        if _TRACE and base.DATA.time - getattr(car, "_rev_trace", 0.0) >= 0.5:
+            car._rev_trace = base.DATA.time
+            print(
+                f"REV {car.name} t={base.DATA.time:6.2f} "
+                f"pos=({pos[0]:+.3f},{pos[1]:+.2f}) yaw={yaw:+.3f} "
+                f"lat={lateral_err:+.3f} yawcmd={yaw_cmd:+.3f} "
+                f"v={speed:+.2f} gap={gap:.2f} clear={clearance:.2f}"
+            )
         return False
 
 
@@ -1147,24 +1233,48 @@ def run_two_straight_reverses(
     cars: list[CarController],
     followers: list[ReverseStraightFollower],
     snapshot_name: str | None = None,
-) -> None:
+) -> float:
     """并行推进两辆车的直线倒车控制器。
 
 参数：
     followers: ReverseStraightFollower 列表。
     snapshot_name: 可选截图名称；当前只保留参数以兼容调用接口。
+返回：
+    倒车过程中两车中心距的最小值，单位 m。
+时序：
+    第一辆车先倒车 2 s，第二辆再起步，使两车在纵向上错开，
+    避免并排同时倒退时车尾互相逼近（车头雷达正后方是盲区）。
 副作用：
     每帧刷新 viewer、推进物理；全部完成后返回。
 重要性等级：B"""
-    snapshot_saved = False
+    lead_until = base.DATA.time + 2.00
+    # 两条倒车车道互相背离 0.12 m：两车并排只有约 1.0 m 中心距，
+    # 各自几度航向残差就会在 2.4 m 行程上收敛到危险距离。
+    for index, follower in enumerate(followers):
+        other_pos, _ = body_pose(follower.car.other_body)
+        own_pos, _ = follower.car.pose()
+        away = 1.0 if own_pos[0] >= other_pos[0] else -1.0
+        follower.lane_x += away * 0.12
+    min_gap = float("inf")
     while any(not follower.done for follower in followers):
         arm.hold()
         finger.hold()
-        for follower in followers:
+        for index, follower in enumerate(followers):
+            if index > 0 and base.DATA.time < lead_until:
+                # 明确保持静止，不让残留指令把车往前带。
+                follower.car.set_motion(0.0, 0.0, 0.0)
+                continue
             if not follower.done:
                 follower.update(cars)
         update_user_scene(sim.viewer, cars)
         sim.step()
+        if len(followers) >= 2:
+            first_pos, _ = followers[0].car.pose()
+            second_pos, _ = followers[1].car.pose()
+            min_gap = min(
+                min_gap, float(np.linalg.norm(first_pos[:2] - second_pos[:2]))
+            )
+    return min_gap
 
 
 class ReverseXAxisFollower:
@@ -1623,11 +1733,13 @@ def execute_cooperative_place(
     sim: base.Simulation,
     arm: base.ArmMotion,
     finger: base.FingerMotion,
+    cars: list["CarController"],
     bucket_xy: np.ndarray,
 ) -> None:
     """控制 CAR1 将抓取物移动到 CAR2 桶口并释放。
 
 参数：
+    sim/arm/finger/cars: 任务共享对象；等待中的二号车也要保持控制刷新。
     bucket_xy: CAR2 屏蔽桶中心世界 XY，shape=(2,)，单位 m。
 副作用：
     求解舒适投放姿态、推进机械臂/夹爪、打印释放站点。
@@ -1642,19 +1754,19 @@ def execute_cooperative_place(
         pre_drop, candidates=PLACE_SPIN_CANDIDATES_DEG
     )
     start_arm_world_flexible(arm, pre_drop, 2.4, spin_deg)
-    base.run_arm_motion(sim, arm, finger)
+    run_arm_motion_concurrent(sim, arm, finger, cars, None)
     start_arm_world_flexible(arm, drop, 1.8, spin_deg)
-    base.run_arm_motion(sim, arm, finger)
-    base.wait_with_pose(sim, arm, finger, 0.7)
+    run_arm_motion_concurrent(sim, arm, finger, cars, None)
+    run_wait_concurrent(sim, arm, finger, cars, 0.7, None)
 
     site_id = _id(mujoco.mjtObj.mjOBJ_SITE, "pinch")
     print(f"  bucket release site: {np.round(base.DATA.site_xpos[site_id], 4)}")
     finger.start(base.FINGER_OPEN, 1.0)
-    base.run_finger_motion(sim, arm, finger)
-    base.wait_with_pose(sim, arm, finger, 0.9)
+    run_finger_motion_concurrent(sim, arm, finger, cars, None)
+    run_wait_concurrent(sim, arm, finger, cars, 0.9, None)
     arm.start_fixed(base.CARRY_FIXED, 2.0)
-    base.run_arm_motion(sim, arm, finger)
-    base.wait_with_pose(sim, arm, finger, 1.2)
+    run_arm_motion_concurrent(sim, arm, finger, cars, None)
+    run_wait_concurrent(sim, arm, finger, cars, 1.2, None)
 
 
 def _update_follower(
@@ -1689,6 +1801,8 @@ def run_arm_motion_concurrent(
         _update_follower(follower, cars)
         update_user_scene(sim.viewer, cars)
         sim.step()
+        if _WATCH:
+            _watch_waiting_car(sim, cars)
     arm.hold()
 
 
@@ -1733,6 +1847,8 @@ def run_wait_concurrent(
         _update_follower(follower, cars)
         update_user_scene(sim.viewer, cars)
         sim.step()
+        if _WATCH:
+            _watch_waiting_car(sim, cars)
 
 
 def finish_follower(
@@ -2266,7 +2382,7 @@ class DualCarMission:
             )
 
         execute_cooperative_place(
-            self.sim, self.arm, self.finger, car2_pos[:2]
+            self.sim, self.arm, self.finger, self.cars, car2_pos[:2]
         )
         obj_after_drop = base.DATA.qpos[
             base.OBJ_QADR : base.OBJ_QADR + 3
@@ -2294,7 +2410,7 @@ class DualCarMission:
             ReverseStraightFollower(self.car1, RADIATION_EXIT_Y, max_speed=0.55),
             ReverseStraightFollower(self.car2, RADIATION_EXIT_Y, max_speed=0.55),
         ]
-        run_two_straight_reverses(
+        reverse_min_gap = run_two_straight_reverses(
             self.sim,
             self.arm,
             self.finger,
@@ -2302,6 +2418,7 @@ class DualCarMission:
             reverse_exit,
             snapshot_name=None,
         )
+        self.metrics["reverse_min_gap"] = reverse_min_gap
 
         car1_return_path = [
             (-2.80, 19.50),

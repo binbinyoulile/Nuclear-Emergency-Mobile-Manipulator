@@ -61,6 +61,7 @@ COLUMNS = [
     "car1_home_error",
     "car2_home_error",
     "both_returned",
+    "reverse_min_gap",
     "log_path",
 ]
 
@@ -185,6 +186,7 @@ def run_one(seed: int, timeout: float, log_dir: Path) -> dict:
         car1_home_error=metrics.get("car1_home_error", ""),
         car2_home_error=metrics.get("car2_home_error", ""),
         both_returned=metrics.get("both_returned", ""),
+        reverse_min_gap=metrics.get("reverse_min_gap", ""),
         log_path=str(log_path.relative_to(PROJECT)),
     )
     return row
