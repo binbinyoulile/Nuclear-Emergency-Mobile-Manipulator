@@ -1022,6 +1022,7 @@ class SkidTurnFollower:
         car: CarController,
         target_heading: float,
         timeout: float = 8.0,
+        ramp_time: float = 0.0,
     ) -> None:
         """初始化目标朝向和转向超时。
 
@@ -1029,6 +1030,8 @@ class SkidTurnFollower:
     car: 被控制车辆。
     target_heading: 目标偏航角，单位 rad。
     timeout: 超时时间，单位 s。
+    ramp_time: 收尾轮速斜坡时间，单位 s；0 表示瞬时起停（旧行为）。
+        传正值时同时启用起转斜坡 SKID_TURN_RAMP_TIME。
 重要性等级：B"""
         self.car = car
         self.target_heading = float(target_heading)
@@ -1039,6 +1042,7 @@ class SkidTurnFollower:
         self._cmd_mag = 0.0
         self._spin_dir = 0.0
         self._spindown_t0: float | None = None
+        self.ramp_time = float(ramp_time)
         print(
             f"  [{car.name}] steering-assist turn to heading "
             f"{self.target_heading:.3f} rad"
@@ -1062,17 +1066,31 @@ class SkidTurnFollower:
         # 航向容差 6°：抓取与投放都用世界坐标解 IK，几度偏差不影响可达性，
         # 却能让车少做一次原地"揉库"。
         tolerance = np.deg2rad(6.0)
-        if self._spindown_t0 is None and abs(error) <= tolerance:
-            # 到位后不再瞬间写 0：按 SKID_TURN_SPINDOWN_TIME 把轮速线性降下来。
+        # 转向方向在开始转的同一帧锁定，且绝不反向找补：
+        # 航向差接近 ±180° 时 wrap_angle 的符号会逐帧跳变，逐帧取符号会让车先反着
+        # 转半圈再转回来（画面上就是"原地绕了一大圈"）；越过目标就收尾，也不会转满一圈。
+        if self._spin_dir == 0.0:
+            self._spin_dir = 1.0 if error < 0.0 else -1.0
+        overshot = (self._spin_dir < 0.0) != (error > 0.0)
+        if self._spindown_t0 is None and (abs(error) <= tolerance or overshot):
+            if self._cmd_mag <= 0.0 or self.ramp_time <= 0.0:
+                # 从来没转过（到点已在容差内）或不开斜坡：直接结束，不动车。
+                self.done = True
+                car.set_motion(0.0, 0.0, 0.0)
+                print(
+                    f"  [{car.name}] heading aligned at yaw={yaw:.3f} rad, "
+                    f"pose=({pos[0]:.3f}, {pos[1]:.3f})"
+                )
+                return True
+            # 到位后不再瞬间写 0：按 ramp_time 把轮速线性降下来。
             self._spindown_t0 = base.DATA.time
             print(
                 f"  [{car.name}] heading aligned at yaw={yaw:.3f} rad, "
                 f"pose=({pos[0]:.3f}, {pos[1]:.3f}), spinning down"
             )
         if self._spindown_t0 is not None:
-            # 从来没转过（停靠时就已在容差内）就不需要斜坡，直接结束。
-            frac = (base.DATA.time - self._spindown_t0) / SKID_TURN_SPINDOWN_TIME
-            if self._cmd_mag <= 0.0 or frac >= 1.0:
+            frac = (base.DATA.time - self._spindown_t0) / self.ramp_time
+            if frac >= 1.0:
                 self.done = True
                 car.set_motion(0.0, 0.0, 0.0)
                 return True
@@ -1084,13 +1102,15 @@ class SkidTurnFollower:
         if base.DATA.time - self.start_time > self.timeout:
             raise RuntimeError(f"{car.name} final heading alignment timeout")
 
-        direction = 1.0 if error < 0.0 else -1.0
-        self._spin_dir = direction
-        ramp = min(
-            1.0,
-            (base.DATA.time - self.start_time) / SKID_TURN_RAMP_TIME,
-        )
-        self._cmd_mag = SKID_TURN_WHEEL_SPEED * max(ramp, 0.0)
+        direction = self._spin_dir
+        if self.ramp_time > 0.0:
+            ramp = min(
+                1.0,
+                (base.DATA.time - self.start_time) / SKID_TURN_RAMP_TIME,
+            )
+            self._cmd_mag = SKID_TURN_WHEEL_SPEED * max(ramp, 0.0)
+        else:
+            self._cmd_mag = SKID_TURN_WHEEL_SPEED
         if base.DATA.time - self.start_time >= self._next_log:
             self._next_log += 0.5
             print(
@@ -1240,103 +1260,6 @@ class ReverseStraightFollower:
                 f"pos=({pos[0]:+.3f},{pos[1]:+.2f}) yaw={yaw:+.3f} "
                 f"lat={lateral_err:+.3f} yawcmd={yaw_cmd:+.3f} "
                 f"v={speed:+.2f} gap={gap:.2f} clear={clearance:.2f}"
-            )
-        return False
-
-
-class ForwardStraightFollower:
-    """锁存车道与航向，直线前进到目标 Y（用于最后一段直线入位）。
-
-    与纯追踪的区别：
-        不追"精确航点"。车贴到终点前 0.1 m 时，到点方位角会剧烈跳变，纯追踪会
-        原地转（正负 8 rad/s）把刚摆正的车身重新甩歪，实测终点航向偏到 48°。
-        这里改成锁存车道 + 锁存航向的直线行驶，按剩余距离平方根降速，到位即停。
-    重要性等级：B"""
-
-    def __init__(
-        self,
-        car: CarController,
-        target_y: float,
-        max_speed: float = 0.60,
-        target_heading: float = CAR_START_YAW,
-        target_x: float | None = None,
-    ) -> None:
-        """记录目标车道、目标航向与目标 Y。
-
-参数：
-    target_y: 世界 Y 目标，单位 m。
-    max_speed: 直线速度上限，单位 m/s。
-    target_heading: 车道要保持的航向，单位 rad。
-    target_x: 目标车道 X；None 表示沿用起步时的 X。
-关键参数：
-    航向锁的是"目标航向"而不是起步实测航向：入位前摆正只保证 6° 容差，
-    若锁成实测值，车会带着这几度偏差斜着走完 1.1 m（实测横漂 0.17 m，
-    两车间距跌破 0.82 m）。
-    车道要锁"停靠点 X"而不是起步 X：原地摆正在轮胎摩擦下会横滑 20 cm 左右，
-    沿用起步 X 会把这 20 cm 一路带进停靠点。
-重要性等级：B"""
-        self.car = car
-        self.target_y = float(target_y)
-        self.max_speed = float(max_speed)
-        self.done = False
-        start_pos, _ = car.pose()
-        self.lane_x = (
-            float(start_pos[0]) if target_x is None else float(target_x)
-        )
-        self.base_heading = float(target_heading)
-        print(
-            f"  [{car.name}] straight dock-in to Y={self.target_y:.2f}, "
-            f"heading={self.base_heading:.3f} rad, lane_x={self.lane_x:.3f}"
-        )
-
-    def update(self, cars: list[CarController]) -> bool:
-        """推进一帧直线入位。
-
-参数：
-    cars: 车辆列表，仅用于与调用方保持统一签名。
-返回：
-    True 表示已到达目标 Y。
-重要性等级：B"""
-        if self.done:
-            return True
-        car = self.car
-        pos, yaw = car.pose()
-        remaining = self.target_y - pos[1]
-        if remaining <= 0.015:
-            self.done = True
-            car.set_motion(0.0, 0.0, 0.0)
-            print(
-                f"  [{car.name}] dock-in complete at "
-                f"({pos[0]:.3f}, {pos[1]:.3f})"
-            )
-            return True
-        speed = min(
-            self.max_speed,
-            float(np.sqrt(max(0.0, 2.0 * 0.8 * (remaining - 0.015)))),
-        )
-        wheel = speed / base.WHEEL_RADIUS
-        # 车道保持：航向残差与横向偏差折算成期望横摆角速度，再用前轮转角实现。
-        # 前进时横向修正的符号与倒车相反：往东偏要靠顺时针（负）转向拉回来。
-        heading_err = base.wrap_angle(self.base_heading - yaw)
-        lateral_err = self.lane_x - pos[0]
-        yaw_cmd = float(
-            np.clip(1.5 * heading_err - 1.2 * lateral_err, -0.30, 0.30)
-        )
-        tan_steer = (
-            yaw_cmd * base.STEER_WHEELBASE / speed if speed > 0.05 else 0.0
-        )
-        steer_target = float(np.clip(np.arctan(tan_steer), -0.45, 0.45))
-        car.left_cmd += base.COMMAND_RAMP * (wheel - car.left_cmd)
-        car.right_cmd += base.COMMAND_RAMP * (wheel - car.right_cmd)
-        car.steer_cmd += base.COMMAND_RAMP * (steer_target - car.steer_cmd)
-        car.set_motion(car.left_cmd, car.right_cmd, car.steer_cmd)
-        if _TRACE and base.DATA.time - getattr(car, "_dock_trace", 0.0) >= 0.25:
-            car._dock_trace = base.DATA.time
-            print(
-                f"DOCKIN {car.name} t={base.DATA.time:6.2f} "
-                f"pos=({pos[0]:+.3f},{pos[1]:+.3f}) yaw={yaw:+.3f} "
-                f"head={heading_err:+.3f} lat={lateral_err:+.3f} "
-                f"yawcmd={yaw_cmd:+.3f} steer={steer_target:+.3f} v={speed:+.2f}"
             )
         return False
 
@@ -2386,14 +2309,14 @@ class DualCarMission:
             [predicted_car1_pos[0] + dock_offset, CAR2_DOCK_CENTER_Y]
         )
         # 保留原来的集结航点（已验证的安全走廊），只在它之后追加：
-        # 先在同一纬度横移到停靠点正南；最后 1.2 m 的北上入位单独一段，
-        # 入位前先把车头摆正，入位段只做直线跟随，终点不再原地转。
+        # 先在同一纬度横移到停靠点正南，再直线北上，避免贴着另一辆车挪车。
         car2_follower.append_path(
             [
                 (
                     float(car2_goal[0]),
                     float(CAR2_DOCK_CENTER_Y - CAR2_STAGING_DY),
                 ),
+                (float(car2_goal[0]), float(car2_goal[1])),
             ]
         )
         dock_ik_error = float("nan")
@@ -2461,37 +2384,31 @@ class DualCarMission:
         finish_follower(
             self.sim, self.arm, self.finger, self.cars, car2_follower
         )
-        # 在集结点先把二号车摆正：纯追踪只在行进中转向，到点常留 30° 以上的残余偏航。
-        # 摆正放在入位之前，入位段就只是 1.2 m 直线跟随，车身不会在绿框边上原地转，
-        # 也就不会把车平移几厘米顶到框里（原地转的横向滑移是轮胎摩擦的自然结果）。
-        car2_align = SkidTurnFollower(self.car2, CAR_START_YAW, timeout=8.0)
-        while not car2_align.done:
-            self.arm.hold()
-            self.finger.hold()
-            car2_align.update(self.cars)
-            update_user_scene(self.sim.viewer, self.cars)
-            self.sim.step()
-        self.car2.stop_and_settle(
-            self.sim, self.arm, self.finger, self.cars
-        )
-        dock_in = ForwardStraightFollower(
-            self.car2,
-            float(car2_goal[1]),
-            max_speed=0.60,
-            target_x=float(car2_goal[0]),
-        )
-        finish_follower(self.sim, self.arm, self.finger, self.cars, dock_in)
-        self.car2.stop_and_settle(
-            self.sim, self.arm, self.finger, self.cars
-        )
-        # 入位后若还残留几度航向偏差，再补一次摆正；已对准时立即结束、不动车。
-        car2_align_dock = SkidTurnFollower(self.car2, CAR_START_YAW, timeout=6.0)
-        while not car2_align_dock.done:
-            self.arm.hold()
-            self.finger.hold()
-            car2_align_dock.update(self.cars)
-            update_user_scene(self.sim.viewer, self.cars)
-            self.sim.step()
+        # 停靠后把二号车摆正：纯追踪只在行进中转向，最后常留下几十度的残余偏航，
+        # 车身投影会变宽，可能顶到绿框边界。摆正只转实际差的那几度（方向锁存、
+        # 越过目标即停），并且带轮速斜坡，避免起停各一帧造成的抽动。
+        # 偏航超过 60° 时不原地转：那个角度的原地转在真实场地里既慢又危险，而车身
+        # 投影在最坏朝向下也只有 0.578 m，配停靠点 Y≈20.05 仍在绿框外侧（20.70）。
+        _, car2_yaw_now = self.car2.pose()
+        align_error = abs(base.wrap_angle(CAR_START_YAW - car2_yaw_now))
+        if align_error <= np.deg2rad(60.0):
+            car2_align = SkidTurnFollower(
+                self.car2,
+                CAR_START_YAW,
+                timeout=6.0,
+                ramp_time=SKID_TURN_SPINDOWN_TIME,
+            )
+            while not car2_align.done:
+                self.arm.hold()
+                self.finger.hold()
+                car2_align.update(self.cars)
+                update_user_scene(self.sim.viewer, self.cars)
+                self.sim.step()
+        else:
+            print(
+                f"  [CAR2] 残余偏航 {np.rad2deg(align_error):.0f}° 超过 60°，"
+                f"不原地转，保持当前朝向入位"
+            )
         self.car2.stop_and_settle(
             self.sim, self.arm, self.finger, self.cars
         )
