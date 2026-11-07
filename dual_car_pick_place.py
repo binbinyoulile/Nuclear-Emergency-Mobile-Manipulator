@@ -2349,15 +2349,37 @@ class DualCarMission:
             car1_align,
             car2_follower,
         )
-        turner = SkidTurnFollower(self.car1, CAR_START_YAW, timeout=8.0)
-        run_turn_with_secondary(
-            self.sim,
-            self.arm,
-            self.finger,
-            self.cars,
-            turner,
-            car2_follower,
-        )
+        # 抓取前把车头摆正：世界坐标解 IK 时基座航向直接决定抓取方向，残差几度可以，
+        # 差太多会让夹爪斜着咬圆柱。但原地转是"轮胎打滑换旋转"——实测只为补 3° 就滑
+        # 移 14 mm 且起停瞬间一次抖动，而这正好是"停在放射物前"该完全静止的时刻。
+        # 因此只在残差超过 12° 时才转，正常 6~10° 的残差直接留着不动车。
+        _, car1_yaw_now = self.car1.pose()
+        car1_align_error = abs(base.wrap_angle(CAR_START_YAW - car1_yaw_now))
+        print(f"  [CAR1] 抓取前残余偏航 {np.rad2deg(car1_align_error):.1f}°")
+        if car1_align_error > np.deg2rad(12.0):
+            turner = SkidTurnFollower(
+                self.car1,
+                CAR_START_YAW,
+                timeout=8.0,
+                ramp_time=SKID_TURN_SPINDOWN_TIME,
+            )
+            run_turn_with_secondary(
+                self.sim,
+                self.arm,
+                self.finger,
+                self.cars,
+                turner,
+                car2_follower,
+            )
+        else:
+            run_wait_concurrent(
+                self.sim,
+                self.arm,
+                self.finger,
+                self.cars,
+                0.15,
+                car2_follower,
+            )
         run_wait_concurrent(
             self.sim,
             self.arm,
