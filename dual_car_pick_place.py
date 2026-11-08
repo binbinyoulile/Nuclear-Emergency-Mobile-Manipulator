@@ -23,7 +23,6 @@ import os
 import random
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import cv2
@@ -37,6 +36,14 @@ SNAPSHOT_DIR = HERE / "docs" / "screenshots"
 os.environ.setdefault("MOBILE_SCENE_PATH", str(HERE / "dual_car_scene.xml"))
 
 import mobile_pick_place as base  # noqa: E402
+from robot_interface import (  # noqa: E402
+    ArmInterface,
+    ChassisInterface,
+    Clock,
+    GripperInterface,
+    PerceptionInterface,
+    RobotIO,
+)
 
 base.V_MAX = 20.00
 base.W_MAX = 20.00
@@ -65,8 +72,6 @@ CAR1_SEARCH_PATH = [
     (float(CAR1_SEARCH_STOP[0]), float(CAR1_SEARCH_STOP[1])),
 ]
 RETURN_LINE_Y = -0.25
-CAR1_HOME = np.array([-3.50, -3.00])
-CAR2_HOME = np.array([4.00, -3.00])
 CAR1_RETURN_LANE_PATH = [
     (-3.00, 20.20),
     (-3.50, 22.00),
@@ -143,19 +148,18 @@ _TRACE = os.environ.get("DUAL_TRACE") == "1"
 _WATCH = os.environ.get("DUAL_WATCH") == "1"
 
 
-def _watch_waiting_car(sim: base.Simulation, cars: list["CarController"]) -> None:
+def _watch_waiting_car(io: "RobotIO") -> None:
     """采样等待中车辆的底盘线速度、轮速指令与接触数（仅调试用）。
 
 参数：
-    sim: 仿真封装，用于取时间步。
-    cars: 车辆列表，取第二辆（等待中的二号车）。
+    io: 任务层握有的硬件端口，取第二辆（等待中的二号车）。
 重要性等级：C"""
-    car = cars[1]
+    car = io.chassis[1]
     vlin = base.DATA.qvel[car.dadr : car.dadr + 2]
     vrot = base.DATA.qvel[car.dadr + 3 : car.dadr + 6]
     pos = base.DATA.xpos[car.body_id]
     acc = getattr(car, "_watch", None) or {
-        "v": 0.0, "r": 0.0, "w": 0.0, "t": base.DATA.time,
+        "v": 0.0, "r": 0.0, "w": 0.0, "t": io.clock.now,
         "p0": pos[:2].copy(),
     }
     acc["v"] = max(acc["v"], float(np.linalg.norm(vlin)))
@@ -179,11 +183,11 @@ def _watch_waiting_car(sim: base.Simulation, cars: list["CarController"]) -> Non
         if car_root in roots:
             n_car += 1
     car._watch = acc
-    if base.DATA.time - acc["t"] < 0.25:
+    if io.clock.now - acc["t"] < 0.25:
         return
     drift = float(np.linalg.norm(pos[:2] - acc["p0"]))
     print(
-        f"WATCH {car.name} t={base.DATA.time:6.2f} "
+        f"WATCH {car.name} t={io.clock.now:6.2f} "
         f"max|v|={acc['v']:.6f} max|w_rot|={acc['r']:.6f} "
         f"max|wq|={acc['w']:.4f} ncon={base.DATA.ncon} carcon={n_car} "
         f"drift={drift:.4f}"
@@ -191,7 +195,7 @@ def _watch_waiting_car(sim: base.Simulation, cars: list["CarController"]) -> Non
     acc["v"] = 0.0
     acc["r"] = 0.0
     acc["w"] = 0.0
-    acc["t"] = base.DATA.time
+    acc["t"] = io.clock.now
 
 
 def _id(obj_type, name: str) -> int:
@@ -520,11 +524,13 @@ def capture_snapshot(
     print("  saved", output_path)
 
 
-class CarController:
+class CarController(ChassisInterface):
     """封装单辆车共用的四轮底盘、雷达和运动指令状态。
 
 数据：
     wheel_act 按 FL/FR/RL/RR 排列；left_cmd/right_cmd 为轮角速度指令，steer_cmd 为前轮角。
+接口：
+    实现 `robot_interface.ChassisInterface`，任务层只依赖该接口，不关心底层是 MuJoCo 还是真车。
 重要性等级：A"""
 
     def __init__(
@@ -611,17 +617,44 @@ class CarController:
         if self.steer_act.size:
             base.DATA.ctrl[self.steer_act] = steer
 
+    # --- ChassisInterface 实现 -------------------------------------------------
+    def set_wheels(self, left: float, right: float, steer: float) -> None:
+        """ChassisInterface：下发左右轮速与前轮转角（等价于 set_motion）。"""
+        self.set_motion(left, right, steer)
+
+    def wheel_speeds(self) -> np.ndarray:
+        """ChassisInterface：实测四轮角速度，顺序 FL/FR/RL/RR，单位 rad/s。"""
+        return np.array(
+            [
+                base.DATA.qvel[base.MODEL.jnt_dofadr[base.MODEL.actuator_trnid[a, 0]]]
+                for a in self.wheel_act
+            ],
+            dtype=float,
+        )
+
+    def contacts_with(self, other: "ChassisInterface") -> int:
+        """ChassisInterface：与本车相关的、与另一辆车的物理接触对数量。"""
+        own_root = int(base.MODEL.body_rootid[self.body_id])
+        other_root = int(base.MODEL.body_rootid[other.body_id])
+        count = 0
+        for index in range(base.DATA.ncon):
+            contact = base.DATA.contact[index]
+            roots = {
+                int(base.MODEL.body_rootid[base.MODEL.geom_bodyid[contact.geom1]]),
+                int(base.MODEL.body_rootid[base.MODEL.geom_bodyid[contact.geom2]]),
+            }
+            if roots == {own_root, other_root}:
+                count += 1
+        return count
+
     def stop_and_settle(
         self,
-        sim: base.Simulation,
-        arm: base.ArmMotion,
-        finger: base.FingerMotion,
-        cars: list["CarController"],
+        io: "RobotIO",
     ) -> None:
         """刹停底盘并推进若干仿真帧等待悬挂和车身稳定。
 
 参数：
-    sim、arm、finger、cars: 任务共享对象。
+    io: 任务层硬件端口。
 副作用：
     清零运动指令、保持机械臂与夹爪，并持续刷新 viewer 和物理状态。
 重要性等级：B"""
@@ -629,20 +662,17 @@ class CarController:
         self.right_cmd = 0.0
         self.steer_cmd = 0.0
         self.set_motion(0.0, 0.0, 0.0)
-        steps = max(1, int(round(base.CHASSIS_SETTLE_TIME / sim.dt)))
+        steps = max(1, int(round(base.CHASSIS_SETTLE_TIME / io.clock.dt)))
         for _ in range(steps):
-            arm.hold()
-            finger.hold()
-            update_user_scene(sim.viewer, cars)
-            sim.step()
+            io.arm.hold()
+            io.gripper.hold()
+            _sync_viewer(io)
+            io.clock.step()
 
     def drive_path(
         self,
-        sim: base.Simulation,
+        io: "RobotIO",
         path: list[tuple[float, float]],
-        arm: base.ArmMotion,
-        finger: base.FingerMotion,
-        cars: list["CarController"],
         snapshot_name: str | None = None,
         waypoint_timeout: float = 22.0,
         final_tolerance: float = 0.16,
@@ -651,6 +681,7 @@ class CarController:
         """阻塞执行一条路径，直到 PathFollower 完成或超时。
 
 参数：
+    io: 任务层硬件端口。
     path: [(x, y), ...] 世界坐标航点，单位 m。
     snapshot_name: 路径过程中保存的截图名；None 表示不保存。
     waypoint_timeout: 单航点超时，单位 s。
@@ -661,6 +692,7 @@ class CarController:
 副作用：
     推进物理与 viewer，结束后调用 stop_and_settle。
 重要性等级：A"""
+        cars = list(io.chassis)
         follower = PathFollower(
             self,
             path,
@@ -671,12 +703,12 @@ class CarController:
             max_speed=max_speed,
         )
         while not follower.done:
-            arm.hold()
-            finger.hold()
+            io.arm.hold()
+            io.gripper.hold()
             follower.update(cars)
-            update_user_scene(sim.viewer, cars)
-            sim.step()
-        self.stop_and_settle(sim, arm, finger, cars)
+            _sync_viewer(io)
+            io.clock.step()
+        self.stop_and_settle(io)
         pos, yaw = self.pose()
         print(f"  [{self.name}] stopped at ({pos[0]:.3f}, {pos[1]:.3f})")
 
@@ -1139,10 +1171,7 @@ class SkidTurnFollower:
 
 
 def run_turn_with_secondary(
-    sim: base.Simulation,
-    arm: base.ArmMotion,
-    finger: base.FingerMotion,
-    cars: list[CarController],
+    io: RobotIO,
     turner: SkidTurnFollower,
     secondary: PathFollower,
 ) -> None:
@@ -1152,16 +1181,17 @@ def run_turn_with_secondary(
     turner: 主车的转向控制器。
     secondary: 可并行的二号车 PathFollower。
 副作用：
-    每帧保持机械臂与夹爪，更新两车控制并推进 sim。
+    每帧保持机械臂与夹爪，更新两车控制并推进时钟。
 重要性等级：B"""
+    cars = list(io.chassis)
     while not turner.done:
-        arm.hold()
-        finger.hold()
+        io.arm.hold()
+        io.gripper.hold()
         turner.update(cars)
         if not secondary.done:
             secondary.update(cars)
-        update_user_scene(sim.viewer, cars)
-        sim.step()
+        _sync_viewer(io)
+        io.clock.step()
 
 
 class ReverseStraightFollower:
@@ -1268,35 +1298,8 @@ class ReverseStraightFollower:
         return False
 
 
-def run_two_turns(
-    sim: base.Simulation,
-    arm: base.ArmMotion,
-    finger: base.FingerMotion,
-    cars: list[CarController],
-    turners: list[SkidTurnFollower],
-) -> None:
-    """并行推进两辆车的转向控制器直到全部完成。
-
-参数：
-    turners: 两辆车的 SkidTurnFollower 列表。
-副作用：
-    每帧保持机械臂与夹爪并推进仿真。
-重要性等级：B"""
-    while any(not turner.done for turner in turners):
-        arm.hold()
-        finger.hold()
-        for turner in turners:
-            if not turner.done:
-                turner.update(cars)
-        update_user_scene(sim.viewer, cars)
-        sim.step()
-
-
 def run_two_straight_reverses(
-    sim: base.Simulation,
-    arm: base.ArmMotion,
-    finger: base.FingerMotion,
-    cars: list[CarController],
+    io: RobotIO,
     followers: list[ReverseStraightFollower],
     snapshot_name: str | None = None,
 ) -> float:
@@ -1313,7 +1316,8 @@ def run_two_straight_reverses(
 副作用：
     每帧刷新 viewer、推进物理；全部完成后返回。
 重要性等级：B"""
-    lead_until = base.DATA.time + 2.00
+    cars = list(io.chassis)
+    lead_until = io.clock.now + 2.00
     # 两条倒车车道互相背离 0.12 m：两车并排只有约 1.0 m 中心距，
     # 各自几度航向残差就会在 2.4 m 行程上收敛到危险距离。
     for index, follower in enumerate(followers):
@@ -1323,17 +1327,17 @@ def run_two_straight_reverses(
         follower.lane_x += away * 0.12
     min_gap = float("inf")
     while any(not follower.done for follower in followers):
-        arm.hold()
-        finger.hold()
+        io.arm.hold()
+        io.gripper.hold()
         for index, follower in enumerate(followers):
-            if index > 0 and base.DATA.time < lead_until:
+            if index > 0 and io.clock.now < lead_until:
                 # 明确保持静止，不让残留指令把车往前带。
                 follower.car.set_motion(0.0, 0.0, 0.0)
                 continue
             if not follower.done:
                 follower.update(cars)
-        update_user_scene(sim.viewer, cars)
-        sim.step()
+        _sync_viewer(io)
+        io.clock.step()
         if len(followers) >= 2:
             first_pos, _ = followers[0].car.pose()
             second_pos, _ = followers[1].car.pose()
@@ -1343,266 +1347,41 @@ def run_two_straight_reverses(
     return min_gap
 
 
-class ReverseXAxisFollower:
-    """在指定车头姿态下沿 -X 方向倒车并保持航道。
-
-重要性等级：B"""
-
-    def __init__(
-        self,
-        car: CarController,
-        target_x: float,
-        target_heading: float = 0.0,
-        max_speed: float = 0.50,
-    ) -> None:
-        """初始化 X 目标、目标朝向和倒车速度。
-
-参数：
-    target_x: 结束位置的世界 X 坐标，单位 m。
-    target_heading: 期望偏航角，单位 rad。
-    max_speed: 正向大小的最大倒车速度，单位 m/s。
-重要性等级：B"""
-        self.car = car
-        self.target_x = float(target_x)
-        self.target_heading = float(target_heading)
-        self.max_speed = float(max_speed)
-        self.start_time = base.DATA.time
-        self.done = False
-        print(f"  [{car.name}] reverse along -X to X={self.target_x:.2f}")
-
-    def update(self, cars: list[CarController]) -> bool:
-        """推进一帧 X 方向倒车与航向修正。
-
-参数：
-    cars: 车辆列表，供雷达与画面更新。
-返回：
-    True 表示到达目标 X，否则 False。
-异常：
-    t=0 后超过 20 s 未完成时抛 RuntimeError。
-关键参数：
-    rear_min 小于 1.20 m 时降速，小于 0.50 m 时停止。
-重要性等级：B"""
-        if self.done:
-            return True
-        car = self.car
-        car.lidar.scan_if_due()
-        pos, yaw = car.pose()
-        if pos[0] <= self.target_x + 0.06:
-            self.done = True
-            car.set_motion(0.0, 0.0, 0.0)
-            print(
-                f"  [{car.name}] reverse alignment complete at "
-                f"({pos[0]:.3f}, {pos[1]:.3f}), yaw={yaw:.3f}"
-            )
-            return True
-        if base.DATA.time - self.start_time > 20.0:
-            raise RuntimeError(f"{car.name} reverse X alignment timeout")
-
-        heading_ref = self.target_heading
-        if self.target_x_lane is not None:
-            heading_ref += float(
-                np.clip(0.50 * (self.target_x_lane - pos[0]), -0.25, 0.25)
-            )
-        yaw_error = base.wrap_angle(heading_ref - yaw)
-        speed = -self.max_speed
-        if car.lidar.rear_min < 1.20:
-            speed = max(speed, -0.26)
-        if car.lidar.rear_min < 0.50:
-            speed = 0.0
-        yaw_rate = float(np.clip(1.10 * yaw_error, -0.42, 0.42))
-        steer_target = (
-            float(np.arctan2(yaw_rate * base.STEER_WHEELBASE, speed))
-            if abs(speed) > 1e-4 else 0.0
-        )
-        steer_target = float(
-            np.clip(steer_target, -base.STEER_MAX, base.STEER_MAX)
-        )
-        left_target = (
-            speed - yaw_rate * base.WHEEL_TRACK / 2.0
-        ) / base.WHEEL_RADIUS
-        right_target = (
-            speed + yaw_rate * base.WHEEL_TRACK / 2.0
-        ) / base.WHEEL_RADIUS
-        car.left_cmd += base.COMMAND_RAMP * (left_target - car.left_cmd)
-        car.right_cmd += base.COMMAND_RAMP * (right_target - car.right_cmd)
-        car.steer_cmd += base.COMMAND_RAMP * (steer_target - car.steer_cmd)
-        car.set_motion(car.left_cmd, car.right_cmd, car.steer_cmd)
-        return False
-
-
-def run_reverse_x_with_secondary(
-    sim: base.Simulation,
-    arm: base.ArmMotion,
-    finger: base.FingerMotion,
-    cars: list[CarController],
-    reverse: ReverseXAxisFollower,
-    secondary: PathFollower,
-) -> None:
-    """阻塞推进主车 X 方向倒车，同时让二号车继续路径跟踪。
-
-重要性等级：B"""
-    while not reverse.done:
-        arm.hold()
-        finger.hold()
-        reverse.update(cars)
-        if not secondary.done:
-            secondary.update(cars)
-        update_user_scene(sim.viewer, cars)
-        sim.step()
-
-
-class ReverseFollower:
-    """通用的负速度返航控制器，带后向雷达限速与航向保持。
-
-重要性等级：B"""
-
-    def __init__(
-        self,
-        car: CarController,
-        target_y: float,
-        target_heading: float,
-        max_speed: float = 0.55,
-        target_x_lane: float | None = None,
-    ) -> None:
-        """初始化返航 Y 目标、目标朝向和可选 X 航道。
-
-参数：
-    target_y: 返航目标 Y，单位 m。
-    target_heading: 倒车时保持的偏航角，单位 rad。
-    max_speed: 最大倒车速度，单位 m/s。
-    target_x_lane: 可选 X 航道修正量，单位 m。
-重要性等级：B"""
-        self.car = car
-        self.target_y = float(target_y)
-        self.target_heading = float(target_heading)
-        self.max_speed = float(max_speed)
-        self.target_x_lane = target_x_lane
-        self.done = False
-        print(
-            f"  [{car.name}] reverse return to Y={self.target_y:.2f}, "
-            f"heading={self.target_heading:.3f} rad"
-        )
-
-    def update(self, cars: list[CarController]) -> bool:
-        """推进一帧倒车返航。
-
-参数：
-    cars: 车辆列表，供雷达和 viewer 更新。
-返回：
-    True 表示到达目标 Y，否则 False。
-关键参数：
-    后向小于 1.20 m 时减速、小于 0.55 m 时停止。
-重要性等级：B"""
-        if self.done:
-            return True
-        car = self.car
-        car.lidar.scan_if_due()
-        pos, yaw = car.pose()
-        if pos[1] <= self.target_y + 0.08:
-            self.done = True
-            car.set_motion(0.0, 0.0, 0.0)
-            print(
-                f"  [{car.name}] reverse return complete at "
-                f"({pos[0]:.3f}, {pos[1]:.3f})"
-            )
-            return True
-
-        yaw_error = base.wrap_angle(self.target_heading - yaw)
-        speed = -self.max_speed
-        if car.lidar.rear_min < 1.20:
-            speed = max(speed, -0.28)
-        if car.lidar.rear_min < 0.55:
-            speed = 0.0
-
-        yaw_rate = float(np.clip(1.10 * yaw_error, -0.48, 0.48))
-        if abs(speed) > 1e-4:
-            steer_target = float(
-                np.arctan2(
-                    yaw_rate * base.STEER_WHEELBASE,
-                    speed,
-                )
-            )
-        else:
-            steer_target = 0.0
-        steer_target = float(
-            np.clip(steer_target, -base.STEER_MAX, base.STEER_MAX)
-        )
-        left_target = (
-            speed - yaw_rate * base.WHEEL_TRACK / 2.0
-        ) / base.WHEEL_RADIUS
-        right_target = (
-            speed + yaw_rate * base.WHEEL_TRACK / 2.0
-        ) / base.WHEEL_RADIUS
-        car.left_cmd += base.COMMAND_RAMP * (left_target - car.left_cmd)
-        car.right_cmd += base.COMMAND_RAMP * (right_target - car.right_cmd)
-        car.steer_cmd += base.COMMAND_RAMP * (steer_target - car.steer_cmd)
-        car.set_motion(car.left_cmd, car.right_cmd, car.steer_cmd)
-        return False
-
-
 def run_two_followers(
-    sim: base.Simulation,
-    arm: base.ArmMotion,
-    finger: base.FingerMotion,
-    cars: list[CarController],
+    io: RobotIO,
     followers: list[PathFollower],
 ) -> None:
     """并行推进两辆车的 PathFollower 直到全部结束。
 
 重要性等级：B"""
+    cars = list(io.chassis)
     while any(not follower.done for follower in followers):
-        arm.hold()
-        finger.hold()
+        io.arm.hold()
+        io.gripper.hold()
         for follower in followers:
             if not follower.done:
                 follower.update(cars)
-        update_user_scene(sim.viewer, cars)
-        sim.step()
+        _sync_viewer(io)
+        io.clock.step()
 
 
 def run_followers_until_primary_done(
-    sim: base.Simulation,
-    arm: base.ArmMotion,
-    finger: base.FingerMotion,
-    cars: list[CarController],
+    io: RobotIO,
     primary: PathFollower,
     secondary: PathFollower,
 ) -> None:
     """推进主车直到完成，二号车在未完成前继续并行跟踪。
 
 重要性等级：B"""
+    cars = list(io.chassis)
     while not primary.done:
-        arm.hold()
-        finger.hold()
+        io.arm.hold()
+        io.gripper.hold()
         primary.update(cars)
         if not secondary.done:
             secondary.update(cars)
-        update_user_scene(sim.viewer, cars)
-        sim.step()
-
-
-def run_two_reverse_returns(
-    sim: base.Simulation,
-    arm: base.ArmMotion,
-    finger: base.FingerMotion,
-    cars: list[CarController],
-    followers: list[ReverseFollower],
-    snapshot_name: str | None = None,
-) -> None:
-    """并行推进两辆车的 ReverseFollower 返航任务。
-
-参数：
-    snapshot_name: 可选截图名；当前保留用于兼容调用接口。
-重要性等级：B"""
-    snapshot_saved = False
-    while any(not follower.done for follower in followers):
-        arm.hold()
-        finger.hold()
-        for follower in followers:
-            if not follower.done:
-                follower.update(cars)
-        update_user_scene(sim.viewer, cars)
-        sim.step()
+        _sync_viewer(io)
+        io.clock.step()
 
 
 # ---------------------------------------------------------------------------
@@ -1796,16 +1575,13 @@ def get_vision_target_position() -> np.ndarray:
 # 机械臂协同投放
 # ---------------------------------------------------------------------------
 def execute_cooperative_place(
-    sim: base.Simulation,
-    arm: base.ArmMotion,
-    finger: base.FingerMotion,
-    cars: list["CarController"],
+    io: RobotIO,
     bucket_xy: np.ndarray,
 ) -> None:
     """控制 CAR1 将抓取物移动到 CAR2 桶口并释放。
 
 参数：
-    sim/arm/finger/cars: 任务共享对象；等待中的二号车也要保持控制刷新。
+    io: 任务层硬件端口；等待中的二号车也要保持控制刷新。
     bucket_xy: CAR2 屏蔽桶中心世界 XY，shape=(2,)，单位 m。
 副作用：
     求解舒适投放姿态、推进机械臂/夹爪、打印释放站点。
@@ -1819,83 +1595,79 @@ def execute_cooperative_place(
     spin_deg = choose_grasp_spin(
         pre_drop, candidates=PLACE_SPIN_CANDIDATES_DEG
     )
-    start_arm_world_flexible(arm, pre_drop, 2.4, spin_deg)
-    run_arm_motion_concurrent(sim, arm, finger, cars, None)
-    start_arm_world_flexible(arm, drop, 1.8, spin_deg)
-    run_arm_motion_concurrent(sim, arm, finger, cars, None)
-    run_wait_concurrent(sim, arm, finger, cars, 0.7, None)
+    start_arm_world_flexible(io, pre_drop, 2.4, spin_deg)
+    run_arm_motion_concurrent(io, None)
+    start_arm_world_flexible(io, drop, 1.8, spin_deg)
+    run_arm_motion_concurrent(io, None)
+    run_wait_concurrent(io, 0.7, None)
 
     site_id = _id(mujoco.mjtObj.mjOBJ_SITE, "pinch")
     print(f"  bucket release site: {np.round(base.DATA.site_xpos[site_id], 4)}")
-    finger.start(base.FINGER_OPEN, 1.0)
-    run_finger_motion_concurrent(sim, arm, finger, cars, None)
-    run_wait_concurrent(sim, arm, finger, cars, 0.9, None)
-    arm.start_fixed(base.CARRY_FIXED, 2.0)
-    run_arm_motion_concurrent(sim, arm, finger, cars, None)
-    run_wait_concurrent(sim, arm, finger, cars, 1.2, None)
+    io.gripper.start(base.FINGER_OPEN, 1.0)
+    run_finger_motion_concurrent(io, None)
+    run_wait_concurrent(io, 0.9, None)
+    io.arm.start_fixed(base.CARRY_FIXED, 2.0)
+    run_arm_motion_concurrent(io, None)
+    run_wait_concurrent(io, 1.2, None)
 
 
 def _update_follower(
     follower: PathFollower | None,
-    cars: list[CarController],
+    cars: tuple[ChassisInterface, ...],
 ) -> None:
     """若二号车路径控制器仍存在且未完成，则推进一帧。
 
 参数：
     follower: 可空的 PathFollower。
-    cars: 车辆列表，供雷达和 viewer 更新。
+    cars: 车辆接口元组，供雷达和 viewer 更新。
 重要性等级：C"""
     if follower is not None and not follower.done:
-        follower.update(cars)
+        follower.update(list(cars))
+
+
+def _sync_viewer(io: RobotIO) -> None:
+    """把两车雷达点云同步到 viewer（真机后端里是空操作）。"""
+    update_user_scene(io.viewer, list(io.chassis))
 
 
 def run_arm_motion_concurrent(
-    sim: base.Simulation,
-    arm: base.ArmMotion,
-    finger: base.FingerMotion,
-    cars: list[CarController],
+    io: RobotIO,
     follower: PathFollower | None = None,
 ) -> None:
     """推进机械臂运动，同时让二号车继续路径跟踪。
 
 关键时序：
-    arm.active 期间每帧先更新机械臂，再更新 follower，最后 sim.step。
+    arm.active 期间每帧先更新机械臂，再更新 follower，最后推进时钟。
 重要性等级：A"""
-    while arm.active:
-        arm.update(sim.dt)
-        finger.hold()
-        _update_follower(follower, cars)
-        update_user_scene(sim.viewer, cars)
-        sim.step()
+    while io.arm.active:
+        io.arm.tick()
+        io.gripper.hold()
+        _update_follower(follower, io.chassis)
+        _sync_viewer(io)
+        io.clock.step()
         if _WATCH:
-            _watch_waiting_car(sim, cars)
-    arm.hold()
+            _watch_waiting_car(io)
+    io.arm.hold()
 
 
 def run_finger_motion_concurrent(
-    sim: base.Simulation,
-    arm: base.ArmMotion,
-    finger: base.FingerMotion,
-    cars: list[CarController],
+    io: RobotIO,
     follower: PathFollower | None = None,
 ) -> None:
     """推进夹爪开合，同时让二号车继续路径跟踪。
 
 重要性等级：A"""
-    while finger.active:
-        arm.hold()
-        finger.update(sim.dt)
-        _update_follower(follower, cars)
-        update_user_scene(sim.viewer, cars)
-        sim.step()
-    finger.hold()
+    while io.gripper.active:
+        io.arm.hold()
+        io.gripper.tick()
+        _update_follower(follower, io.chassis)
+        _sync_viewer(io)
+        io.clock.step()
+    io.gripper.hold()
 
 
 def run_wait_concurrent(
-    sim: base.Simulation,
-    arm: base.ArmMotion,
-    finger: base.FingerMotion,
-    cars: list[CarController],
+    io: RobotIO,
     duration: float,
     follower: PathFollower | None = None,
 ) -> None:
@@ -1906,22 +1678,19 @@ def run_wait_concurrent(
 关键参数：
     至少执行一步，避免零时长导致控制循环空转。
 重要性等级：B"""
-    steps = max(1, int(round(duration / sim.dt)))
+    steps = max(1, int(round(duration / io.clock.dt)))
     for _ in range(steps):
-        arm.hold()
-        finger.hold()
-        _update_follower(follower, cars)
-        update_user_scene(sim.viewer, cars)
-        sim.step()
+        io.arm.hold()
+        io.gripper.hold()
+        _update_follower(follower, io.chassis)
+        _sync_viewer(io)
+        io.clock.step()
         if _WATCH:
-            _watch_waiting_car(sim, cars)
+            _watch_waiting_car(io)
 
 
 def finish_follower(
-    sim: base.Simulation,
-    arm: base.ArmMotion,
-    finger: base.FingerMotion,
-    cars: list[CarController],
+    io: RobotIO,
     follower: PathFollower,
 ) -> None:
     """阻塞推进二号车路径直到完成。
@@ -1930,11 +1699,11 @@ def finish_follower(
     PathFollower.update 的超时异常原样传播。
 重要性等级：B"""
     while not follower.done:
-        arm.hold()
-        finger.hold()
-        follower.update(cars)
-        update_user_scene(sim.viewer, cars)
-        sim.step()
+        io.arm.hold()
+        io.gripper.hold()
+        follower.update(list(io.chassis))
+        _sync_viewer(io)
+        io.clock.step()
 
 
 
@@ -2101,7 +1870,7 @@ def find_optimal_dock_for_predicted_pose(
 
 
 def start_arm_world_flexible(
-    arm: base.ArmMotion,
+    io: RobotIO,
     target_world: np.ndarray,
     duration: float,
     spin_deg: float,
@@ -2109,7 +1878,7 @@ def start_arm_world_flexible(
     """用指定工具自旋角启动世界坐标机械臂运动。
 
 参数：
-    arm: 机械臂控制器。
+    io: 任务层硬件端口。
     target_world: 世界目标位置，shape=(3,)，单位 m。
     duration: 运动时长，单位 s。
     spin_deg: 绕工具轴旋转角，单位 deg。
@@ -2120,20 +1889,18 @@ def start_arm_world_flexible(
         q_base * Rotation.from_euler(GRASP_SPIN_AXIS, np.deg2rad(spin_deg))
     ).as_quat(scalar_first=True)
     print(f"  arm target world={np.round(target_world, 3)}")
-    arm.start_fixed(target_fixed, duration, quat)
+    io.arm.start_fixed(target_fixed, duration, quat)
 
 
 def execute_grasp_concurrent(
-    sim: base.Simulation,
-    arm: base.ArmMotion,
-    finger: base.FingerMotion,
-    cars: list[CarController],
+    io: RobotIO,
     target_pos: np.ndarray,
     follower: PathFollower | None,
 ) -> bool:
     """执行 CAR1 接近、抓取、提升和收回，同时让 CAR2 继续行驶。
 
 参数：
+    io: 任务层硬件端口。
     target_pos: 视觉估计的物体世界位置，shape=(3,)，单位 m。
     follower: 可空的 CAR2 路径控制器。
 返回：
@@ -2147,24 +1914,185 @@ def execute_grasp_concurrent(
     lift = np.array([target_pos[0], target_pos[1], base.LIFT_WORLD_Z])
 
     spin_deg = choose_grasp_spin(approach)
-    start_arm_world_flexible(arm, approach, base.APPROACH_TIME, spin_deg)
-    run_arm_motion_concurrent(sim, arm, finger, cars, follower)
-    start_arm_world_flexible(arm, grasp, base.DESCEND_TIME, spin_deg)
-    run_arm_motion_concurrent(sim, arm, finger, cars, follower)
+    start_arm_world_flexible(io, approach, base.APPROACH_TIME, spin_deg)
+    run_arm_motion_concurrent(io, follower)
+    start_arm_world_flexible(io, grasp, base.DESCEND_TIME, spin_deg)
+    run_arm_motion_concurrent(io, follower)
 
-    finger.start(base.FINGER_CLOSE, base.CLOSE_TIME)
-    run_finger_motion_concurrent(sim, arm, finger, cars, follower)
-    force = float(abs(base.DATA.actuator_force[base.FINGER_ACT]))
-    print(f"  finger force after close: {force:.2f} N")
+    io.gripper.start(base.FINGER_CLOSE, base.CLOSE_TIME)
+    run_finger_motion_concurrent(io, follower)
+    print(f"  finger force after close: {io.gripper.force():.2f} N")
 
-    start_arm_world_flexible(arm, lift, base.LIFT_TIME, spin_deg)
-    run_arm_motion_concurrent(sim, arm, finger, cars, follower)
-    arm.start_fixed(base.CARRY_FIXED, base.CARRY_TIME)
-    run_arm_motion_concurrent(sim, arm, finger, cars, follower)
+    start_arm_world_flexible(io, lift, base.LIFT_TIME, spin_deg)
+    run_arm_motion_concurrent(io, follower)
+    io.arm.start_fixed(base.CARRY_FIXED, base.CARRY_TIME)
+    run_arm_motion_concurrent(io, follower)
 
-    obj = base.DATA.qpos[base.OBJ_QADR : base.OBJ_QADR + 3].copy()
+    obj = io.perception.object_truth()
     print(f"  cylinder after grasp: {np.round(obj, 4)}")
     return bool(obj[2] > target_pos[2] + 0.04)
+
+
+# ---------------------------------------------------------------------------
+# 仿真侧适配器：把 robot_interface 的抽象接口翻译成 MuJoCo 读写
+# ---------------------------------------------------------------------------
+class SimClock(Clock):
+    """MuJoCo 仿真的时钟与单帧推进。
+
+    任务层只通过它取时间、推进物理，因此换真机时只要替换本类即可，
+    上层状态机不需要认识 `mujoco`。
+    重要性等级：A"""
+
+    def __init__(self, sim: base.Simulation) -> None:
+        self._sim = sim
+
+    @property
+    def now(self) -> float:
+        """当前仿真时间，单位 s。"""
+        return float(base.DATA.time)
+
+    @property
+    def dt(self) -> float:
+        """单个控制帧时长，单位 s。"""
+        return float(self._sim.dt)
+
+    def step(self) -> None:
+        """推进一帧物理（含 viewer 同步）。"""
+        self._sim.step()
+
+
+class SimArm(ArmInterface):
+    """把 `base.ArmMotion` 包装成 ArmInterface。
+
+    关键参数：
+        IK 与关节插值都走原有的 mink 求解器与重力补偿，行为与重构前完全一致。
+    重要性等级：A"""
+
+    def __init__(self, arm: base.ArmMotion, clock: Clock) -> None:
+        self._arm = arm
+        self._clock = clock
+
+    def joint_positions(self) -> np.ndarray:
+        return base.DATA.qpos[base.ARM_QADR].copy()
+
+    def set_joint_targets(self, q: np.ndarray) -> None:
+        self._arm.set_ctrl(q)
+
+    def start_fixed(
+        self,
+        target_pos_fixed: np.ndarray,
+        duration: float,
+        target_quat: np.ndarray | None = None,
+    ) -> None:
+        self._arm.start_fixed(
+            target_pos_fixed,
+            duration,
+            base.TARGET_QUAT if target_quat is None else target_quat,
+        )
+
+    def tick(self) -> None:
+        self._arm.update(self._clock.dt)
+
+    def hold(self) -> None:
+        self._arm.hold()
+
+    @property
+    def active(self) -> bool:
+        return bool(self._arm.active)
+
+    def solve_ik(
+        self, pos_world: np.ndarray, target_quat: np.ndarray
+    ) -> tuple[np.ndarray, float]:
+        pos_fixed, quat_fixed = base.world_target_to_fixed(pos_world)
+        if target_quat is not None:
+            quat_fixed = target_quat
+        return base.solve_ik_fixed(
+            pos_fixed, quat_fixed, seed_q=base.DATA.qpos[base.ARM_QADR]
+        )
+
+
+class SimGripper(GripperInterface):
+    """把 `base.FingerMotion` 包装成 GripperInterface。"""
+
+    def __init__(self, finger: base.FingerMotion, clock: Clock) -> None:
+        self._finger = finger
+        self._clock = clock
+
+    def start(self, value: float, duration: float) -> None:
+        self._finger.start(value, duration)
+
+    def tick(self) -> None:
+        self._finger.update(self._clock.dt)
+
+    def hold(self) -> None:
+        self._finger.hold()
+
+    @property
+    def active(self) -> bool:
+        return bool(self._finger.active)
+
+    def force(self) -> float:
+        return float(abs(base.DATA.actuator_force[base.FINGER_ACT]))
+
+
+class SimPerception(PerceptionInterface):
+    """仿真感知：离屏渲染取图 + HSV/深度定位，真值仅用于验收。"""
+
+    def capture(self) -> tuple[np.ndarray, np.ndarray]:
+        return get_camera_data()
+
+    def detect_target(
+        self, rgb: np.ndarray, depth: np.ndarray
+    ) -> np.ndarray:
+        return process_camera_frame(rgb, depth)
+
+    def object_truth(self) -> np.ndarray:
+        return base.DATA.qpos[base.OBJ_QADR : base.OBJ_QADR + 3].copy()
+
+
+def build_sim_robot_io(
+    sim: base.Simulation,
+    arm: base.ArmMotion,
+    finger: base.FingerMotion,
+    car1: CarController,
+    car2: CarController,
+) -> RobotIO:
+    """把仿真对象组装成任务层握有的 RobotIO。
+
+参数：
+    sim/arm/finger: MuJoCo 侧的执行器封装。
+    car1/car2: 两辆底盘，均实现 ChassisInterface。
+返回：
+    任务层唯一允许使用的硬件端口集合。
+重要性等级：A"""
+    clock = SimClock(sim)
+    return RobotIO(
+        clock=clock,
+        chassis=(car1, car2),
+        arm=SimArm(arm, clock),
+        gripper=SimGripper(finger, clock),
+        perception=SimPerception(),
+        viewer=sim.viewer,
+    )
+
+
+def build_robot_io(backend: str, **kwargs) -> RobotIO:
+    """按后端名构造 RobotIO；目前只实现 sim。
+
+参数：
+    backend: "sim"（默认）。
+异常：
+    其他后端名抛 NotImplementedError，并给出接入位置提示。
+重要性等级：A"""
+    if backend == "sim":
+        return build_sim_robot_io(
+            kwargs["sim"], kwargs["arm"], kwargs["finger"],
+            kwargs["car1"], kwargs["car2"],
+        )
+    raise NotImplementedError(
+        f"backend={backend!r} 尚未实现：真机/ROS2 适配器应实现 "
+        f"robot_interface 的 Clock/Chassis/Arm/Gripper/Perception 后在此注册"
+    )
 
 
 class DualCarMission:
@@ -2175,27 +2103,28 @@ class DualCarMission:
 重要性等级：A"""
     def __init__(
         self,
-        sim: base.Simulation,
-        arm: base.ArmMotion,
-        finger: base.FingerMotion,
+        io: RobotIO,
         car1: CarController,
         car2: CarController,
         target_truth: np.ndarray,
         save_snapshots: bool,
+        sim: base.Simulation | None = None,
     ) -> None:
-        """保存任务所需的仿真、机械臂、双车和目标真值。
+        """保存任务所需的硬件端口、双车和目标真值。
 
 参数：
+    io: 任务层唯一允许使用的硬件端口集合（时钟/底盘/机械臂/夹爪/感知）。
+    car1/car2: 两辆底盘（同时也在 io.chassis 里，保留引用便于写日志）。
     target_truth: 仅用于视觉结果误差验证的物体真值，shape=(3,)，单位 m。
     save_snapshots: 是否在关键节点保存截图。
+    sim: 仅截图/离屏渲染需要的仿真封装；真机后端传 None。
 重要性等级：A"""
-        self.sim = sim
-        self.arm = arm
-        self.finger = finger
+        self.io = io
         self.car1 = car1
         self.car2 = car2
         self.target_truth = target_truth
         self.save_snapshots = save_snapshots
+        self._sim = sim
         self.cars = [car1, car2]
         # 回归矩阵使用的结构化指标；run() 逐阶段填充，失败时保留已完成部分。
         self.metrics: dict[str, object] = {"stage": "init"}
@@ -2208,20 +2137,7 @@ class DualCarMission:
 用途：
     最终验收中检测是否发生物理穿模或碰撞。
 重要性等级：A"""
-        car1_root = int(base.MODEL.body_rootid[self.car1.body_id])
-        car2_root = int(base.MODEL.body_rootid[self.car2.body_id])
-        count = 0
-        for contact_index in range(base.DATA.ncon):
-            contact = base.DATA.contact[contact_index]
-            geom1_root = int(
-                base.MODEL.body_rootid[base.MODEL.geom_bodyid[contact.geom1]]
-            )
-            geom2_root = int(
-                base.MODEL.body_rootid[base.MODEL.geom_bodyid[contact.geom2]]
-            )
-            if {geom1_root, geom2_root} == {car1_root, car2_root}:
-                count += 1
-        return count
+        return self.io.chassis[0].contacts_with(self.io.chassis[1])
 
     def run(self) -> bool:
         """执行双车协同回收完整状态机。
@@ -2245,11 +2161,8 @@ class DualCarMission:
         print("\n[阶段 2] 一号车前往目标区，正在雷达避障...")
         print("[模块解耦] 移动控制阶段：仅使用雷达和底盘控制，不调用相机/Renderer。")
         self.car1.drive_path(
-            self.sim,
+            self.io,
             CAR1_SEARCH_PATH,
-            self.arm,
-            self.finger,
-            self.cars,
             snapshot_name="dual_car1_avoid.png" if self.save_snapshots else None,
             final_tolerance=0.12,
             max_speed=6.50,
@@ -2275,30 +2188,21 @@ class DualCarMission:
             max_speed=6.50,
         )
         print("[并发调度] 二号车已收到出发指令，开始连续前往目标区。")
-        run_wait_concurrent(
-            self.sim, self.arm, self.finger, self.cars, 0.15, car2_follower
-        )
+        run_wait_concurrent(self.io, 0.15, car2_follower)
 
         print("[模块解耦] 一号车已经停车，采集一帧 D435i RGB/深度。")
-        print("\n[视觉识别] 采集相机帧并将图像处理放入后台线程...")
-        rgb, depth = get_camera_data()
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(process_camera_frame, rgb, depth)
-            while not future.done():
-                self.arm.hold()
-                self.finger.hold()
-                if not car2_follower.done:
-                    car2_follower.update(self.cars)
-                update_user_scene(self.sim.viewer, self.cars)
-                self.sim.step()
-            target = future.result()
+        print("\n[视觉识别] 采集相机帧并同步处理（同步以保证回归可复现）。")
+        # 刻意同步调用：若在后台线程里处理、主循环按 future.done() 边步进边等，
+        # 推进帧数会取决于线程墙钟，同一 seed 两次可能走出不同轨迹（回归不可复现）。
+        rgb, depth = self.io.perception.capture()
+        target = self.io.perception.detect_target(rgb, depth)
         vision_error = float(np.linalg.norm(target - self.target_truth))
         self.metrics.update(
             vision_error_mm=vision_error * 1000.0,
             vision_target=target.tolist(),
             truth_target=self.target_truth.tolist(),
         )
-        print("[模块解耦] 后台视觉完成；二号车运动期间仿真主循环未阻塞。")
+        print("[模块解耦] 视觉完成；界面与感知已通过 PerceptionInterface 隔离。")
 
         predicted_car1_pos = np.array(
             [target[0], target[1] - 0.85], dtype=float
@@ -2342,10 +2246,7 @@ class DualCarMission:
             max_speed=1.20,
         )
         run_followers_until_primary_done(
-            self.sim,
-            self.arm,
-            self.finger,
-            self.cars,
+            self.io,
             car1_align,
             car2_follower,
         )
@@ -2363,39 +2264,15 @@ class DualCarMission:
                 timeout=8.0,
                 ramp_time=SKID_TURN_SPINDOWN_TIME,
             )
-            run_turn_with_secondary(
-                self.sim,
-                self.arm,
-                self.finger,
-                self.cars,
-                turner,
-                car2_follower,
-            )
+            run_turn_with_secondary(self.io, turner, car2_follower)
         else:
-            run_wait_concurrent(
-                self.sim,
-                self.arm,
-                self.finger,
-                self.cars,
-                0.15,
-                car2_follower,
-            )
-        run_wait_concurrent(
-            self.sim,
-            self.arm,
-            self.finger,
-            self.cars,
-            0.5,
-            car2_follower,
-        )
+            run_wait_concurrent(self.io, 0.15, car2_follower)
+        run_wait_concurrent(self.io, 0.5, car2_follower)
 
-        grasp_start = base.DATA.time
+        grasp_start = self.io.clock.now
         self.metrics["stage"] = "4_grasp"
         grasp_success = execute_grasp_concurrent(
-            self.sim,
-            self.arm,
-            self.finger,
-            self.cars,
+            self.io,
             target,
             car2_follower,
         )
@@ -2404,12 +2281,10 @@ class DualCarMission:
         self.metrics.update(grasp_ok=True, grasp_sim_start=float(grasp_start))
         print(
             f"\n[阶段 4] 一号车抓取成功，夹爪闭合。"
-            f" 仿真时间 {base.DATA.time:.2f} s"
+            f" 仿真时间 {self.io.clock.now:.2f} s"
         )
 
-        finish_follower(
-            self.sim, self.arm, self.finger, self.cars, car2_follower
-        )
+        finish_follower(self.io, car2_follower)
         # 停靠后不再原地转摆正：纯追踪只在行进中转向，到点可能留几度残余偏航，
         # 但差速原地转在地面上是"轮胎打滑"——实测只为补正 3° 就把车整体滑移了 2 cm，
         # 而且正好发生在机械臂准备投放、车身必须绝对静止的时刻（用户看到的"动一下"）。
@@ -2420,9 +2295,7 @@ class DualCarMission:
         print(
             f"  [CAR2] 停靠残余偏航 {np.rad2deg(align_error):.1f}°（保持，不原地转）"
         )
-        self.car2.stop_and_settle(
-            self.sim, self.arm, self.finger, self.cars
-        )
+        self.car2.stop_and_settle(self.io)
         self.metrics["stage"] = "5_dock_check"
         car2_pos, car2_yaw = self.car2.pose()
         car1_pose, _ = self.car1.pose()
@@ -2470,12 +2343,8 @@ class DualCarMission:
                 -38.0,
             )
 
-        execute_cooperative_place(
-            self.sim, self.arm, self.finger, self.cars, car2_pos[:2]
-        )
-        obj_after_drop = base.DATA.qpos[
-            base.OBJ_QADR : base.OBJ_QADR + 3
-        ].copy()
+        execute_cooperative_place(self.io, car2_pos[:2])
+        obj_after_drop = self.io.perception.object_truth()
         drop_xy_error = float(
             np.linalg.norm(obj_after_drop[:2] - car2_pos[:2])
         )
@@ -2500,10 +2369,7 @@ class DualCarMission:
             ReverseStraightFollower(self.car2, RADIATION_EXIT_Y, max_speed=0.55),
         ]
         reverse_min_gap = run_two_straight_reverses(
-            self.sim,
-            self.arm,
-            self.finger,
-            self.cars,
+            self.io,
             reverse_exit,
             snapshot_name=None,
         )
@@ -2546,19 +2412,14 @@ class DualCarMission:
             max_speed=6.50,
         )
         run_two_followers(
-            self.sim,
-            self.arm,
-            self.finger,
-            self.cars,
+            self.io,
             [car1_return, car2_return],
         )
 
         self.metrics["stage"] = "7_acceptance"
         car1_final, _ = self.car1.pose()
         car2_final, _ = self.car2.pose()
-        obj_final = base.DATA.qpos[
-            base.OBJ_QADR : base.OBJ_QADR + 3
-        ].copy()
+        obj_final = self.io.perception.object_truth()
         final_xy_error = float(
             np.linalg.norm(obj_final[:2] - car2_final[:2])
         )
@@ -2585,7 +2446,7 @@ class DualCarMission:
             car2_home_error=car2_home_error,
             both_home=bool(both_home),
             both_returned=bool(both_returned),
-            sim_time_s=float(base.DATA.time),
+            sim_time_s=float(self.io.clock.now),
         )
 
         if not both_returned:
@@ -2751,7 +2612,7 @@ def run_mission(
     metrics.update(
         seed=seed,
         wall_time_s=round(time.perf_counter() - started, 3),
-        sim_time_s=round(float(base.DATA.time), 3),
+        sim_time_s=round(float(mission.io.clock.now), 3),
         ok=metrics.get("stage") == "done",
     )
     metrics.setdefault("error", None)
@@ -2775,16 +2636,26 @@ def main() -> None:
     parser.add_argument("--headless", action="store_true")
     parser.add_argument("--snapshot", action="store_true")
     parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument(
+        "--backend",
+        default="sim",
+        choices=("sim",),
+        help="硬件后端；目前只有 sim（真机后端待接入）",
+    )
     args = parser.parse_args()
 
     started = time.perf_counter()
     print(f"scene: {base.MOBILE_SCENE}")
     print(f"model: nq={base.MODEL.nq} nv={base.MODEL.nv} nu={base.MODEL.nu}")
+    print(f"backend: {args.backend}")
     arm, finger, car1, car2, target = initialize_mission(args.seed)
     print(f"random radioactive target: {np.round(target, 4)}")
 
     if args.headless or args.snapshot:
         sim = base.Simulation(realtime=False)
+        io = build_robot_io(
+            args.backend, sim=sim, arm=arm, finger=finger, car1=car1, car2=car2
+        )
         if args.snapshot:
             capture_snapshot(
                 "dual_overview.png",
@@ -2795,8 +2666,9 @@ def main() -> None:
                 -52.0,
             )
         mission = DualCarMission(
-            sim, arm, finger, car1, car2, target,
+            io, car1, car2, target,
             save_snapshots=args.snapshot,
+            sim=sim,
         )
         ok = run_mission(mission, args.seed, started)
         raise SystemExit(0 if ok else 1)
@@ -2811,8 +2683,11 @@ def main() -> None:
         viewer.cam.elevation = -52.0
 
         sim = base.Simulation(viewer, realtime=True)
+        io = build_robot_io(
+            args.backend, sim=sim, arm=arm, finger=finger, car1=car1, car2=car2
+        )
         mission = DualCarMission(
-            sim, arm, finger, car1, car2, target, save_snapshots=False
+            io, car1, car2, target, save_snapshots=False, sim=sim
         )
         ok = run_mission(mission, args.seed, started)
         print("Mission complete. Close viewer to exit.")

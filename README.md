@@ -13,7 +13,8 @@
 
 # 双车协同核应急移动操作臂仿真
 
-[GitHub 仓库](https://github.com/binbinyoulile/Nuclear-Emergency-Mobile-Manipulator)
+[GitHub 仓库](https://github.com/binbinyoulile/Nuclear-Emergency-Mobile-Manipulator) ·
+[架构说明](ARCHITECTURE.md)
 
 基于 MuJoCo 的双车协同核废料回收项目：UR10e 移动操作臂负责雷达避障、D435i 深度相机识别、抓取与投放；运输车负责动态停靠和屏蔽桶转运。项目以纯 Python 状态机实现，并保留清晰的 ROS2 / 真机迁移接口。
 
@@ -162,12 +163,15 @@ D:\Python313\python.exe .\scripts\run_matrix.py --seeds 0-20
 
 - 通过率：`21/21`
 - D435i 视觉坐标误差：`8.5 ~ 10.0 mm`
-- 桶内 XY 误差：`0.001 ~ 0.005 m`（容差 `0.05 m`）
-- 停靠时刻两车中心距：`0.967 ~ 1.114 m`（安全阈值 `0.82 m`），全程最小中心距 `0.964 ~ 1.066 m`，物理接触 `0`
-- 二号车停靠后车身上沿：`20.474 ~ 20.672 m`（绿框下边界 `20.700 m`）
+- 桶内 XY 误差：`0.001 ~ 0.023 m`（容差 `0.05 m`；1 cm 半径圆柱在 5 cm 半径桶内的正常散布）
+- 停靠时刻两车中心距：`0.967 ~ 1.097 m`（安全阈值 `0.82 m`），全程最小中心距 `0.963 ~ 1.060 m`，物理接触 `0`
+- 二号车停靠后车身上沿：`20.455 ~ 20.631 m`（绿框下边界 `20.700 m`）
 - 一号车抓取前残余偏航：`0.1° ~ 9.2°`（超过 `12°` 才原地摆正，全部种子都不需要）
 - 回起点误差：CAR1 `0.084 ~ 0.086 m`，CAR2 `0.090 ~ 0.096 m`（阈值 `0.20 m`）
-- 单次仿真时长：`54.0 ~ 63.1 s`
+- 单次仿真时长：`53.9 ~ 57.6 s`
+
+历史基线快照保存在 `reports/baselines/`（`v1.0.0.csv` / `stage0_sync.csv` / `stage0_refactor.csv`），
+可用 `python scripts/compare_metrics.py a.csv b.csv` 做逐指标对比，验证重构前后是否等价。
 
 ## 版本与里程碑
 
