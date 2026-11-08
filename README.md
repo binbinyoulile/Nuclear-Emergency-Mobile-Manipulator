@@ -1,6 +1,7 @@
 <div align="center">
 
 <img alt="version" src="https://img.shields.io/badge/version-v1.0.0-2f6feb?style=for-the-badge" />
+<img alt="license" src="https://img.shields.io/badge/license-MIT-yellow?style=for-the-badge" />
 <img alt="python" src="https://img.shields.io/badge/python-3.10%2B%20%7C%203.13.12-3776AB?style=for-the-badge&logo=python&logoColor=white" />
 <img alt="mujoco" src="https://img.shields.io/badge/MuJoCo-3.16.0-orange?style=for-the-badge" />
 <img alt="mink" src="https://img.shields.io/badge/IK-mink%201.3.0-7b61ff?style=for-the-badge" />
@@ -208,4 +209,6 @@ D:\Python313\python.exe .\scripts\run_matrix.py --seeds 0-20
 
 ## License
 
-UR10e 模型文件遵循 MuJoCo Menagerie 中附带的 BSD-3-Clause License；Robotiq 2F-85 资产按其上游许可证使用。项目自建代码与场景用于学习、科研和作品展示。
+本项目自建代码与场景采用 [MIT License](LICENSE)，Copyright (c) 2026 Haobin Zhu。
+
+第三方资产沿用其上游许可证：UR10e 模型文件遵循 MuJoCo Menagerie 附带的 BSD-3-Clause License；Robotiq 2F-85 资产按其上游许可证使用。
