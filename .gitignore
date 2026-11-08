@@ -12,8 +12,7 @@ models/**/assets/
 *.obj
 models/**/*.png
 
-# Local tooling and logs
-.codex/
+# Local logs
 *.log
 
 # Editors and OS metadata
