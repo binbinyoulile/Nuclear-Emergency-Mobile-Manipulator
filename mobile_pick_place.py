@@ -69,16 +69,21 @@ HOME_QPOS = np.array([-1.5708, -1.5708, 1.5708, -1.5708, -1.5708, 0.0])
 TARGET_QUAT = np.array([0.0, 1.0, 0.0, 0.0])  # 工具坐标系 +Y 轴朝下
 
 GROUND_Z = 0.0
-OBJECT_RADIUS = 0.01
+OBJECT_RADIUS = 0.003
 OBJ_POS = np.array([6.00, 0.00, GROUND_Z + OBJECT_RADIUS])
 BUCKET_POS = np.array([6.00, 4.00, 0.00])
 OBJECT_STOP = np.array([5.00, 0.00])       # 位于圆柱后方 1.00 m
 BUCKET_STOP = np.array([5.00, 4.00])       # 位于屏蔽桶后方 1.00 m
 BUCKET_DROP_WORLD = np.array([6.00, 4.00, 0.28])
 
-APPROACH_WORLD_Z = OBJ_POS[2] + 0.17
-GRASP_WORLD_Z = OBJ_POS[2] + 0.007
-LIFT_WORLD_Z = OBJ_POS[2] + 0.30
+# 夹爪几何实测（以 pinch 站点为原点，竖直方向）：闭合时夹持面覆盖 pinch 下方 17.7 mm 到
+# 上方 20.0 mm，张开时下沿只在 pinch 下方 4.5 mm。由此推出"自上而下夹一根平躺圆棒"的
+# 可行带：pinch 必须落在离地 17.7~20.7 mm 之间——低了指尖会压进地面（闭合被地面顶住），
+# 高了夹持面盖不到棒身最宽处。取中间值，闭合后指尖离地约 0.8 mm。
+PINCH_ABOVE_FLOOR = 0.0185
+GRASP_WORLD_Z = GROUND_Z + PINCH_ABOVE_FLOOR
+APPROACH_WORLD_Z = GRASP_WORLD_Z + 0.17
+LIFT_WORLD_Z = GRASP_WORLD_Z + 0.30
 PRE_DROP_WORLD_Z = 0.42
 DROP_WORLD_Z = 0.28
 
@@ -286,6 +291,32 @@ def solve_ik_fixed(
     残差异常大时先确认目标是否在可达空间，再检查 frame_name、四元数顺序和姿态约束。
 重要性等级：A"""
     seed = HOME_QPOS if seed_q is None else np.asarray(seed_q, dtype=float)[:6]
+    q_solution, error = _solve_ik_once(target_pos, target_quat, seed)
+    if error <= IK_TOL:
+        return q_solution, error
+    # 以当前关节角为种子时，解可能被推到"绕了好几圈"的等价分支上，肩/肘顶到关节限位后
+    # 卡死（实测残差 600~700 mm，机械臂几乎不动）。此时改用 HOME 姿态重解一次并取更好的
+    # 那个：HOME 分支离"从车顶伸到车前地面"这条常用路径最近。
+    q_alt, error_alt = _solve_ik_once(target_pos, target_quat, HOME_QPOS)
+    if error_alt < error:
+        return q_alt, error_alt
+    return q_solution, error
+
+
+def _solve_ik_once(
+    target_pos: np.ndarray,
+    target_quat: np.ndarray,
+    seed: np.ndarray,
+) -> tuple[np.ndarray, float]:
+    """从指定种子跑一次 mink IK，不做重试。
+
+    参数：
+        target_pos: 固定基座模型坐标系下的目标位置，shape=(3,)，单位 m。
+        target_quat: 目标姿态四元数 wxyz。
+        seed: 6 维初始关节角。
+    返回：
+        (关节角, 末端位置残差)，残差单位 m。
+    重要性等级：B"""
     tmp = mujoco.MjData(IK_MODEL)
     tmp.qpos[:6] = seed
     tmp.qpos[6:8] = 0.0

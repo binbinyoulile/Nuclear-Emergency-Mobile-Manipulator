@@ -11,6 +11,8 @@ models/**/assets/
 *.stl
 *.obj
 models/**/*.png
+# 自建几何体随仓库入库：chopstick.obj 是本项目自己生成的网格，不靠 fetch_models.py 还原
+!models/chopstick/chopstick.obj
 
 # Local logs
 *.log

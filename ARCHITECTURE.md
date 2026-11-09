@@ -43,6 +43,7 @@ mobile_manipulator/
 ├─ arm_ik_scene.xml         # 固定基座 IK 场景
 ├─ models/                  # UR10e 复合模型（assets 由 scripts/fetch_models.py 下载，不入库）
 ├─ scripts/                 # fetch_models.py / run_matrix.py / compare_metrics.py
+├─ ros2_ws/src/             # 阶段 1 ROS 2 骨架：mm_msgs / mm_sim / mm_mission / mm_perception / mm_bringup
 ├─ docs/screenshots/        # README 配图
 └─ reports/                 # regression.csv（入库）+ logs/（本地忽略）
 ```
@@ -117,8 +118,8 @@ DualCarMission.metrics（逐阶段 dict）
 | 横摆角速度上限 | 1.5 rad/s | 超过会把重载车甩飞 |
 | 二号车停靠中心 Y | 20.06 m（绿框下边界 -0.64） | 车身任意朝向投影 ≤0.578 m，留 0.06 m 余量 |
 | 抓取前摆正阈值 | 12° | 补 3° 的原地转要滑 14 mm，代价大于收益 |
-| 目标区 / 放射源散布 | 0.70×0.60 m / X±0.28、Y20.78–21.22 | UR10e 臂展 1.3 m，抓取点 0.94 m（72%） |
-| 落桶容差 | 0.05 m | 桶内半径 0.05 m |
+| 目标区 / 放射源散布 | 0.70×0.60 m；杆原点 X −0.269~+0.100、Y 20.78–21.22 | UR10e 臂展 1.3 m，抓取点 0.94 m（72%）；区间按 202 mm 杆的两端半长从搜索窗内缩，保证整根杆不出界 |
+| 落桶容差 | 0.05 m | 实测杆质心偏差 1~8 mm，留 6 倍余量 |
 
 ## 9. 回归与验收
 
@@ -140,5 +141,6 @@ DualCarMission.metrics（逐阶段 dict）
 
 | 时间 | 内容 |
 |---|---|
+| 2026-11-08 | 阶段 1 骨架：`ros2_ws/src` 下三节点（sim_bridge / mission / target_localizer）+ `/clock` 帧同步 + launch，设计见 `docs/ros2_stage1_design.md` |
 | 2026-11-08 | 阶段 0：抽出 `robot_interface.py` 与 `Sim*` 适配器，任务层只依赖 `RobotIO`；视觉等待改同步（回归可复现）；删除 247 行死代码；新增 `compare_metrics.py` |
 | 2026-11-08 | v1.0.0 基线冻结（tag `v1.0.0`），补 MIT 协议与 README 徽章 |

@@ -60,9 +60,25 @@ TARGET_ZONE_X_MIN = -0.35
 TARGET_ZONE_X_MAX = 0.35
 TARGET_ZONE_Y_MIN = 20.70
 TARGET_ZONE_Y_MAX = 21.30
-OBJECT_X_RANGE = (-0.28, 0.28)
+# 视觉搜索窗＝目标区内缩 4~5 cm，把贴地的绿色边框（高 0.8 mm，也落在离地带内）
+# 挡在搜索范围之外；边框内沿在 X=±0.332、Y=20.718/21.282。
+STEEL_ROI_X = (TARGET_ZONE_X_MIN + 0.05, TARGET_ZONE_X_MAX - 0.05)
+STEEL_ROI_Y = (TARGET_ZONE_Y_MIN + 0.04, TARGET_ZONE_Y_MAX - 0.04)
+# 被操作对象是 202 mm 长杆，body 原点在粗端截面中心、生成时沿世界 +X 平放，
+# 因此从原点量起：到粗端端面 16.2 mm、到细端末端 185.2 mm。采样时必须让整根杆
+# 都留在搜索窗内——杆一戳出窗，观测位就会拍不全（粗端判错、误差约一个杆长），
+# 测量位甚至分割不到。那是测试用例本身不合理，不是控制或视觉算法的问题。
+ROD_BACK_HALF = 0.0162
+ROD_FRONT_HALF = 0.1852
+OBJECT_SPAWN_MARGIN = 0.015
+OBJECT_X_RANGE = (
+    STEEL_ROI_X[0] + OBJECT_SPAWN_MARGIN + ROD_BACK_HALF,   # -0.2688
+    STEEL_ROI_X[1] - OBJECT_SPAWN_MARGIN - ROD_FRONT_HALF,   # +0.0998
+)
 OBJECT_Y_RANGE = (20.78, 21.22)
-OBJECT_Z = 0.01
+OBJECT_Z = 0.003   # 平躺在 1 号车前的粗端轴心高度（粗端 Ø6 mm）
+if not OBJECT_X_RANGE[0] < OBJECT_X_RANGE[1]:
+    raise ValueError("rod no longer fits inside the vision search window")
 
 CAR1_START = np.array([-0.70, -1.00])
 CAR2_START = np.array([0.90, -1.20])
@@ -100,12 +116,26 @@ DOCK_OFFSET_STEP = 0.01
 DOCK_COMFORT_WEIGHT = 10.0
 CAR2_MIN_SEPARATION = 0.82
 
-BUCKET_BASE_Z = 0.40356
-BUCKET_HEIGHT = 0.20
+BUCKET_BASE_Z = 0.40356                 # 二号车顶面
+BUCKET_HEIGHT = 0.26                    # 屏蔽桶总高（底 20 mm + 壁 240 mm）
+BUCKET_FLOOR_Z = BUCKET_BASE_Z + 0.02   # 桶底上表面
 BUCKET_OPENING_Z = BUCKET_BASE_Z + BUCKET_HEIGHT
 DROP_WORLD_Z = BUCKET_OPENING_Z + 0.035
 PRE_DROP_WORLD_Z = BUCKET_OPENING_Z + 0.10
+# 投放改为"倾斜入桶"：桶内径 0.11 m、深 0.18 m，筷子 0.202 m 平躺着放不进去，
+# 横着送过去只会卡在桶口两侧。因此投放前把工具绕自身 x 轴下俯，让细端先探进桶口，
+# 松爪后靠自重与桶壁碰撞翻成斜立在桶里的姿态。全程不做空中姿态调整，工具自旋沿用
+# 抓取时那一档。
+PLACE_APPROACH_TIME = 2.4
+PLACE_DESCEND_TIME = 4.0
+PLACE_INSERT_Z = BUCKET_OPENING_Z + 0.06    # 松爪时夹持点的高度：杆悬在桶口正上方
+PLACE_SETTLE_TIME = 2.0
 BUCKET_XY_TOL = 0.05
+BUCKET_ROD_COM_Y = 0.092                     # 筷子质心距粗端，m
+# 一号车停车距离：抓取位按机械臂可达性取 0.85 m；近距测量位取 1.41 m（腕部相机
+# 离目标约 1.0 m，落在 D435i 28.5° 固定下俯的可见带内），详见 run() 中的注释。
+GRASP_STANDOFF_Y = 0.85
+MEASURE_STANDOFF_Y = 1.41
 
 # 两车共用的激光雷达配置。
 LIDAR_PERIOD = 0.10
@@ -974,6 +1004,12 @@ class PathFollower:
             self.index == len(self.path) - 1
             and distance < 0.80
             and abs(heading_error) < np.deg2rad(50.0)
+            # 末段直行锁定前轮、不再修正横向偏差，所以必须确认现有车头方向真的
+            # 指向终点：航向偏 20° 时直线开 0.8 m 就偏出 0.27 m，车会从终点旁边
+            # 擦过去，越过终点后 heading_error 翻号、pivot 反复触发，绕圈十几秒
+            # 也回不到位（seed 4 实测）。用"车头延长线离终点的横向距离"当判据，
+            # 物理含义就是这条直线能不能压到终点上。
+            and distance * abs(float(np.sin(heading_error))) < 0.06
         )
         # 掉头优先级高于终点直行：两者可能同时成立（终点直行看的是绕行锁存航向），
         # 若先走直行分支会把左右轮速同时写成 0，彻底卡死。
@@ -1417,80 +1453,202 @@ Sim2Real：
     return rgb, depth
 
 
-def detect_yellow_target(
-    rgb: np.ndarray,
-) -> tuple[int, int, np.ndarray, np.ndarray] | None:
-    """视觉第 2 层：HSV 黄色分割、形态学去噪与最大轮廓质心。
-
-参数：
-    rgb: RGB 图像，shape=(H,W,3)，dtype=uint8。
-返回：
-    (u, v, contour, mask)；未找到目标时返回 None。
-关键参数：
-    H=[15,40]、S=[100,255]、V=[100,255]；先开运算去噪，再两次闭运算补洞。
-副作用：
-    写入 VISION_LAST["mask"]，供深度邻域过滤。
-重要性等级：A"""
-    hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
-    mask = cv2.inRange(
-        hsv,
-        np.array([15, 100, 100], dtype=np.uint8),
-        np.array([40, 255, 255], dtype=np.uint8),
-    )
-    kernel = np.ones((3, 3), dtype=np.uint8)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
-    contours, _ = cv2.findContours(
-        mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-    )
-    if not contours:
-        return None
-    contour = max(contours, key=cv2.contourArea)
-    moments = cv2.moments(contour)
-    if moments["m00"] <= 0.0:
-        return None
-    u = int(round(moments["m10"] / moments["m00"]))
-    v = int(round(moments["m01"] / moments["m00"]))
-    VISION_LAST["mask"] = mask
-    return u, v, contour, mask
+# 不锈钢棒的视觉参数 ---------------------------------------------------------
+# 不锈钢本色在中性灰地面上几乎没有颜色对比，所以视觉不再用颜色，改用"离地高度"这一
+# 几何特征：地面是 z=0 的平面，棒最高处 6 mm。把反投影后落在地面上方 0.8~30 mm 的点
+# 取出来，就正好是一根棒子的可见表面——对光照、反光、颜色都不敏感。
+STEEL_HEIGHT_MIN = 0.0008
+STEEL_HEIGHT_MAX = 0.030
+STEEL_MIN_PIXELS = 15
+STEEL_LENGTH_RANGE = (0.10, 0.26)
+STEEL_THICK_LENGTH = 0.033
 
 
-def pixel_to_world(u: int, v: int, depth: float) -> np.ndarray:
-    """视觉第 3 层：由像素与深度反投影到 MuJoCo 世界坐标。
+def depth_to_world(depth: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """视觉第 2 层：把整幅深度图反投影成世界坐标点云。
 
-参数：
-    u, v: 像素坐标，原点在左上角。
-    depth: 相机沿视线方向的物理深度，单位 m。
-返回：
-    世界坐标 shape=(3,)，单位 m。
-算法：
-    fy=(H/2)/tan(fovy/2)，fx=fy，cx=W/2，cy=H/2；
-    X_cam=(u-cx)Z/fx，Y_cam=-(v-cy)Z/fy。
-    MuJoCo 相机 +Z 与视向相反，因此局部向量写成 [X_cam,Y_cam,-depth]。
-Sim2Real：
-    ROS2 中保留内参投影，但外参改用 tf2_ros 查询相机光学坐标系到世界坐标系。
-重要性等级：A"""
-    rgb = VISION_LAST["rgb"]
-    image_h, image_w = rgb.shape[:2]
+    参数：
+        depth: 深度图，shape=(H,W)，单位 m，沿相机光轴。
+    返回：
+        (world, valid)：world 形状 (H,W,3)、单位 m；valid 是有效深度掩码。
+    算法：
+        fx=fy=(H/2)/tan(fovy/2)，cx=W/2，cy=H/2；像素 (u,v) 在相机系中的坐标是
+        (x,y,z)=((u-cx)d/fx, -(v-cy)d/fy, -d)，再经相机旋转换到世界系。
+        MuJoCo 相机 +Z 与视线方向相反，因此深度取负。
+    Sim2Real：
+        ROS2 中图像与深度来自 /camera/color/image_raw 与 /camera/depth/image_rect_raw，
+        内外参分别来自 CameraInfo 与 tf2。
+    重要性等级：A"""
+    image_h, image_w = depth.shape[:2]
     cam_id = _id(mujoco.mjtObj.mjOBJ_CAMERA, "d435i")
     fovy = np.deg2rad(float(base.MODEL.cam_fovy[cam_id]))
     fy = (image_h / 2.0) / np.tan(fovy / 2.0)
     fx = fy
-    cx = image_w / 2.0
-    cy = image_h / 2.0
-
-    x_cam = (u - cx) * depth / fx
-    y_cam = -(v - cy) * depth / fy
-    # MuJoCo 相机 +Z 轴与视线方向相反。保持物理深度为正，
-    # 并在构造局部向量时对该轴取负。
-    point_cam = np.array([x_cam, y_cam, -depth], dtype=float)
-    cam_pos = VISION_LAST.get(
-        "cam_pos", base.DATA.cam_xpos[cam_id]
-    ).copy()
+    valid = np.isfinite(depth) & (depth > 0.05) & (depth < 9.0)
+    d = np.where(valid, depth, 1.0)
+    u = np.arange(image_w, dtype=float)[None, :]
+    v = np.arange(image_h, dtype=float)[:, None]
+    x_cam = (u - image_w / 2.0) * d / fx
+    y_cam = -(v - image_h / 2.0) * d / fy
+    points_cam = np.stack([x_cam, y_cam, -d], axis=-1)
+    cam_pos = VISION_LAST.get("cam_pos", base.DATA.cam_xpos[cam_id])
     cam_mat = VISION_LAST.get(
         "cam_mat", base.DATA.cam_xmat[cam_id].reshape(3, 3)
-    ).copy()
-    return cam_pos + cam_mat @ point_cam
+    )
+    world = points_cam @ np.asarray(cam_mat).T + np.asarray(cam_pos)
+    return world, valid
+
+
+def detect_steel_target(
+    depth: np.ndarray,
+    verbose: bool = True,
+) -> np.ndarray | None:
+    """视觉第 2 层：在目标区内分割"离地条状物"，拟合轴线并定位粗端。
+
+    参数：
+        depth: 深度图，shape=(H,W)，单位 m。
+        verbose: 是否打印分割统计（诊断用）。
+    返回：
+        粗端圆柱中心的世界坐标 shape=(3,)，单位 m；未找到时返回 None。
+    算法：
+        ① 反投影得到点云，取 z 落在 (0.8, 30) mm 的点；
+        ② 连通域分解，只保留与搜索区有交集的连通域（排除绿色边框等区域外结构）；
+        ③ 对最大连通域做二维 PCA 得到轴线，投影后取 1%/99% 分位当作两端；
+        ④ 两端各取外侧 20% 的点、比较 90% 分位高度：粗端 Ø6 mm 上表面比细端高
+           0.5 mm，高的一侧判为粗端；差异不足 0.2 mm 时退回任务约定的朝向（粗端
+           在 -X 一侧）；
+        ⑤ 粗端“杆端”沿轴线向内推 16.5 mm，得到粗端圆柱中心——真值点、抓取点、
+           视觉点在这里三者重合。
+    约束：
+        只使用传入的深度帧与相机位姿，不读取物体真值。
+    重要性等级：A"""
+    world, valid = depth_to_world(depth)
+    # 先拟合地面平面再取"离地高度"。渲染器给出的深度带约 0.15% 的系统性偏差，
+    # 直接把世界 z 与 0 比较会让 2 m 外的地面也"高出 1.5 mm"，整片地面被误当成目标。
+    # 最小二乘拟合可以把这个偏差连同一阶倾斜一起消掉；筷子只占千分之几的像素，
+    # 不会把平面带偏。
+    near = valid & (depth < 3.0) & (np.abs(world[..., 2]) < 0.02)
+    if int(near.sum()) < 500:
+        return None
+    plane = np.column_stack(
+        [world[near][:, 0], world[near][:, 1], np.ones(int(near.sum()))]
+    )
+    coef = np.linalg.lstsq(plane, world[near][:, 2], rcond=None)[0]
+    height = world[..., 2] - (
+        coef[0] * world[..., 0] + coef[1] * world[..., 1] + coef[2]
+    )
+    band = valid & (height > STEEL_HEIGHT_MIN) & (height < STEEL_HEIGHT_MAX)
+    if not band.any():
+        return None
+    roi = (
+        (world[..., 0] > STEEL_ROI_X[0])
+        & (world[..., 0] < STEEL_ROI_X[1])
+        & (world[..., 1] > STEEL_ROI_Y[0])
+        & (world[..., 1] < STEEL_ROI_Y[1])
+    )
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(
+        band.astype(np.uint8), connectivity=8
+    )
+    best, best_area = -1, 0
+    for label in range(1, count):
+        area = int(stats[label, cv2.CC_STAT_AREA])
+        if area < STEEL_MIN_PIXELS or area <= best_area:
+            continue
+        if not (roi & (labels == label)).any():
+            continue
+        best, best_area = label, area
+    if best < 0:
+        if verbose:
+            print(f"  [视觉] 离地带内没有落在搜索区里的连通域（候选 {count - 1} 个）")
+        return None
+
+    points = world[labels == best]
+    flat = points[:, :2]
+    mean = flat.mean(axis=0)
+    centred = flat - mean
+    _, vectors = np.linalg.eigh(centred.T @ centred)
+    axis = vectors[:, -1]
+    axis = axis / np.linalg.norm(axis)
+    along = centred @ axis
+    t_lo, t_hi = np.percentile(along, [1.0, 99.0])
+    length = float(t_hi - t_lo)
+    if not STEEL_LENGTH_RANGE[0] <= length <= STEEL_LENGTH_RANGE[1]:
+        if verbose:
+            print(f"  [视觉] 分割长度 {length * 100:.1f} cm 不在筷子长度范围内，判为误检")
+        return None
+
+    ends = np.stack([mean + axis * t_lo, mean + axis * t_hi])
+    span = max(length, 1e-6)
+    outer_lo = along <= t_lo + 0.2 * span
+    outer_hi = along >= t_hi - 0.2 * span
+    z_lo = float(np.percentile(points[outer_lo, 2], 90)) if outer_lo.sum() >= 5 else 0.0
+    z_hi = float(np.percentile(points[outer_hi, 2], 90)) if outer_hi.sum() >= 5 else 0.0
+    if abs(z_hi - z_lo) >= 2e-4:
+        thick_at_lo = z_lo > z_hi
+        source = "高度差"
+    else:
+        # 两端高度差不足 0.2 mm（贴地或反光遮挡严重）：退回任务约定——筷子生成时
+        # 粗端在原点、细端沿 +X 伸展，所以粗端是更靠 -X 的那一端。
+        thick_at_lo = bool(ends[0][0] < ends[1][0])
+        source = "任务约定朝向"
+    tip_index = 0 if thick_at_lo else 1
+    tip = ends[tip_index]
+    inward = ends[1 - tip_index] - tip
+    inward = inward / max(float(np.linalg.norm(inward)), 1e-6)
+    centre = tip + inward * (STEEL_THICK_LENGTH / 2.0)
+    if verbose:
+        print(
+            f"  [视觉] 分割 {best_area} 像素，长度 {length * 100:.1f} cm，"
+            f"两端高度 {z_lo * 1000:.2f}/{z_hi * 1000:.2f} mm，"
+            f"粗端判据={source}"
+        )
+    return np.array([centre[0], centre[1], OBJECT_Z], dtype=float)
+
+
+def process_camera_frame(
+    rgb: np.ndarray,
+    depth: np.ndarray,
+) -> np.ndarray:
+    """在冻结帧上做分割、粗端定位与误差校验。
+
+    参数：
+        rgb: 已采集 RGB 帧，shape=(480,640,3)——本代视觉不用颜色，保留是为了与
+             ROS2 话题契约（彩色图 + 深度图）一致。
+        depth: 已采集深度帧，shape=(480,640)，单位 m。
+    返回：
+        视觉估计的粗端世界坐标 shape=(3,)，单位 m。
+    异常：
+        未分割到目标或误差大于 0.03 m 时抛 RuntimeError。
+    重要性等级：A"""
+    del rgb
+    print("[VISION] processing frozen depth frame")
+    vision_world = detect_steel_target(depth)
+    if vision_world is None:
+        raise RuntimeError("stainless rod not found in D435i depth frame")
+
+    truth = get_object_truth_for_validation()
+    error = float(np.linalg.norm(vision_world - truth))
+    print(
+        f"[视觉识别] 粗端世界坐标(X_vis={vision_world[0]:.4f}, "
+        f"Y_vis={vision_world[1]:.4f}, Z_vis={vision_world[2]:.4f})"
+    )
+    print(
+        f"           仿真真值(X_true={truth[0]:.4f}, Y_true={truth[1]:.4f}, "
+        f"Z_true={truth[2]:.4f}), 误差={error * 1000.0:.2f} mm"
+    )
+    if error > 0.03:
+        raise RuntimeError(f"vision error too large: {error * 1000.0:.2f} mm")
+    return vision_world
+
+
+def get_vision_target_position() -> np.ndarray:
+    """同步包装完整视觉管线，供测试和诊断使用。
+
+    返回：
+        视觉估计的世界坐标 shape=(3,)，单位 m。
+    重要性等级：B"""
+    rgb, depth = get_camera_data()
+    return process_camera_frame(rgb, depth)
 
 
 def get_object_truth_for_validation() -> np.ndarray:
@@ -1506,109 +1664,114 @@ def get_object_truth_for_validation() -> np.ndarray:
     ].copy()
 
 
-def process_camera_frame(
-    rgb: np.ndarray,
-    depth: np.ndarray,
-) -> np.ndarray:
-    """在冻结帧上执行检测、深度中位数滤波、反投影和误差验证。
+def start_arm_world_flexible_quat(spin_deg: float) -> np.ndarray:
+    """构造"工具竖直 + 抓取自旋"的工具四元数（固定基座坐标系，wxyz）。
 
-参数：
-    rgb: 已采集 RGB 帧，shape=(480,640,3)。
-    depth: 已采集深度帧，shape=(480,640)，单位 m。
-返回：
-    视觉估计的世界坐标 shape=(3,)，单位 m。
-异常：
-    未找到黄色目标、质心邻域无有效深度或误差大于 0.03 m 时抛 RuntimeError。
-关键参数：
-    质心周围取 5x5，过滤 NaN、0、负值和大于 10 m 的值后取中位数，降低边缘反光影响。
-并发：
-    可在线程池中运行；仅使用传入冻结帧和 VISION_LAST 中同一帧数据，主线程继续推进 CAR2 与仿真。
-重要性等级：A"""
-    print("[VISION] processing frozen RGB/depth frame in worker thread")
-    detection = detect_yellow_target(rgb)
-    if detection is None:
-        raise RuntimeError("yellow radioactive target not found in D435i image")
-    u, v, _, _ = detection
-
-    v0, v1 = max(0, v - 2), min(depth.shape[0], v + 3)
-    u0, u1 = max(0, u - 2), min(depth.shape[1], u + 3)
-    patch = depth[v0:v1, u0:u1]
-    patch_mask = VISION_LAST["mask"][v0:v1, u0:u1] > 0
-    valid_mask = np.isfinite(patch) & (patch > 0.0) & (patch < 10.0)
-    masked_depth = patch[valid_mask & patch_mask]
-    valid = masked_depth if masked_depth.size >= 3 else patch[valid_mask]
-    if valid.size == 0:
-        raise RuntimeError("no valid depth samples around target centroid")
-    target_depth = float(np.median(valid))
-    vision_world = pixel_to_world(u, v, target_depth)
-
-    truth = get_object_truth_for_validation()
-    error = float(np.linalg.norm(vision_world - truth))
-    print(
-        f"[视觉识别] 像素({u},{v}) -> 深度Z={target_depth:.5f} m "
-        f"-> 视觉世界坐标(X_vis={vision_world[0]:.4f}, "
-        f"Y_vis={vision_world[1]:.4f}, Z_vis={vision_world[2]:.4f})"
-    )
-    print(
-        f"           仿真真实坐标(X_true={truth[0]:.4f}, "
-        f"Y_true={truth[1]:.4f}, Z_true={truth[2]:.4f}), "
-        f"误差={error * 100.0:.2f} cm"
-    )
-    if error > 0.03:
-        raise RuntimeError(f"vision error too large: {error * 1000.0:.2f} mm")
-    return vision_world
+    参数：
+        spin_deg: 抓取时选定的工具自旋角，单位 deg。
+    重要性等级：A"""
+    q_base = Rotation.from_quat(base.TARGET_QUAT, scalar_first=True)
+    return (
+        q_base * Rotation.from_euler(GRASP_SPIN_AXIS, np.deg2rad(spin_deg))
+    ).as_quat(scalar_first=True)
 
 
-def get_vision_target_position() -> np.ndarray:
-    """同步包装完整视觉管线，供测试和诊断使用。
+def held_rod_axis() -> np.ndarray:
+    """读出被夹住的筷子的实际轴向（世界系）。
 
-返回：
-    视觉估计的世界坐标 shape=(3,)，单位 m。
-异常：
-    get_camera_data 或 process_camera_frame 的错误原样传播。
-重要性等级：B"""
-    rgb, depth = get_camera_data()
-    return process_camera_frame(rgb, depth)
+    返回：
+        单位向量 shape=(3,)。
+    说明：
+        夹爪只能传递绕竖直轴的转动，杆在夹爪里可能还会滚动/俯仰，所以投放对准用
+        "实测朝向"而不是"按抓取姿态推算"。真机上这一项由腕部相机给出。
+    重要性等级：A"""
+    axis = Rotation.from_quat(
+        np.asarray(base.DATA.qpos[base.OBJ_QADR + 3 : base.OBJ_QADR + 7]),
+        scalar_first=True,
+    ).as_matrix()[:, 0]
+    return axis / max(float(np.linalg.norm(axis)), 1e-9)
 
 
-# ---------------------------------------------------------------------------
-# 机械臂协同投放
-# ---------------------------------------------------------------------------
 def execute_cooperative_place(
     io: RobotIO,
     bucket_xy: np.ndarray,
+    spin_deg: float,
 ) -> None:
-    """控制 CAR1 将抓取物移动到 CAR2 桶口并释放。
+    """夹着粗端把筷子整体下探进屏蔽桶，松爪后靠重力落进桶底。
 
-参数：
-    io: 任务层硬件端口；等待中的二号车也要保持控制刷新。
-    bucket_xy: CAR2 屏蔽桶中心世界 XY，shape=(2,)，单位 m。
-副作用：
-    求解舒适投放姿态、推进机械臂/夹爪、打印释放站点。
-异常：
-    无合适姿态时由 choose_grasp_spin 抛 RuntimeError。
-重要性等级：A"""
-    target_xy = np.asarray(bucket_xy, dtype=float)
-    pre_drop = np.array([target_xy[0], target_xy[1], PRE_DROP_WORLD_Z])
-    drop = np.array([target_xy[0], target_xy[1], DROP_WORLD_Z])
-
-    spin_deg = choose_grasp_spin(
-        pre_drop, candidates=PLACE_SPIN_CANDIDATES_DEG
-    )
-    start_arm_world_flexible(io, pre_drop, 2.4, spin_deg)
+    参数：
+        io: 任务层硬件端口；等待中的二号车也要保持控制刷新。
+        bucket_xy: CAR2 屏蔽桶中心世界 XY，shape=(2,)，单位 m。
+        spin_deg: 与抓取时相同的工具自旋角——搬运途中不调整姿态。
+    副作用：
+        推进机械臂/夹爪、打印入桶站点与物体位姿。
+    说明：
+        桶内径 0.24 m、深 0.26 m。筷子长 0.202 m，所以必须先把**质心**对到桶心
+        （夹持点在粗端，比质心靠外 92 mm），整根杆才落在 Ø240 的桶口投影内、不会横搭
+        在桶沿上；对准后在桶口正上方 6 cm 松爪，杆靠重力落进桶底。
+        对准用实测杆轴：夹爪只能传递绕竖直轴的转动，杆在夹爪里可能已经相对工具转过
+        一个角度。（"夹着杆压到桶口以下再松"和"加大夹持力硬压"都试过：前者杆会被桶沿
+        顶住、从夹爪里向上滑脱；后者杆变成刚性探针、机械臂直接压不动。桶口小于杆长时
+        水平杆必然横跨在口上，所以只能把桶口做到 Ø240、让杆自由落进去。）
+    重要性等级：A"""
+    bucket = np.asarray(bucket_xy, dtype=float)
+    quat = start_arm_world_flexible_quat(spin_deg)
+    stage = np.array([bucket[0], bucket[1], BUCKET_OPENING_Z + 0.30])
+    start_arm_world_quat(io, stage, PLACE_APPROACH_TIME, quat)
     run_arm_motion_concurrent(io, None)
-    start_arm_world_flexible(io, drop, 1.8, spin_deg)
-    run_arm_motion_concurrent(io, None)
-    run_wait_concurrent(io, 0.7, None)
 
+    axis = held_rod_axis()
     site_id = _id(mujoco.mjtObj.mjOBJ_SITE, "pinch")
-    print(f"  bucket release site: {np.round(base.DATA.site_xpos[site_id], 4)}")
+    # 只把夹持点对到桶心不够：搬运途中杆可能在夹爪里沿轴向滑过一段（实测偏移可达
+    # 45 mm，而 202 mm 的杆在 Ø240 桶口里每侧只有约 19 mm 余量，偏了就会横架在桶沿）。
+    # 这里直接量"夹持点 → 质心"的实际偏移，再把它反推到桶心正上方。
+    rod_com = base.DATA.qpos[base.OBJ_QADR : base.OBJ_QADR + 3] + (
+        BUCKET_ROD_COM_Y * axis
+    )
+    offset = rod_com - base.DATA.site_xpos[site_id]
+    insert = np.array([bucket[0], bucket[1], PLACE_INSERT_Z]) - np.array(
+        [offset[0], offset[1], 0.0]
+    )
+    print(
+        f"  place: spin={spin_deg:+.0f} deg, rod axis={np.round(axis, 3)}, "
+        f"com_offset={np.round(offset * 1000, 1)} mm, insert={np.round(insert, 3)}"
+    )
+
+    start_arm_world_quat(io, insert, PLACE_DESCEND_TIME, quat)
+    run_arm_motion_concurrent(io, None)
+
+    # 松爪前按实测质心再修一次：下探途中杆还可能沿轴向再滑一点，而 202 mm 的杆在
+    # Ø240 桶口里每侧只有约 19 mm 余量——偏出这个量就会横架在桶沿上。
+    for _ in range(2):
+        com_now = base.DATA.qpos[base.OBJ_QADR : base.OBJ_QADR + 3] + (
+            BUCKET_ROD_COM_Y * held_rod_axis()
+        )
+        err = com_now[:2] - np.array([bucket[0], bucket[1]])
+        print(f"  drop centring residual = {np.round(err * 1000, 1)} mm")
+        if float(np.linalg.norm(err)) < 0.008:
+            break
+        insert = insert - np.array([err[0], err[1], 0.0])
+        start_arm_world_quat(io, insert, 0.8, quat)
+        run_arm_motion_concurrent(io, None)
+
+    print(f"  bucket insert site: {np.round(base.DATA.site_xpos[site_id], 4)}")
+    print(
+        "  object at release: "
+        f"{np.round(base.DATA.qpos[base.OBJ_QADR:base.OBJ_QADR + 7], 4)}"
+    )
+
     io.gripper.start(base.FINGER_OPEN, 1.0)
     run_finger_motion_concurrent(io, None)
-    run_wait_concurrent(io, 0.9, None)
+    run_wait_concurrent(io, PLACE_SETTLE_TIME, None)
+
+    # 原姿态竖直抬起再收臂：直接转回 CARRY 会横扫过桶口，把刚放下的筷子打飞。
+    start_arm_world_quat(
+        io, insert + np.array([0.0, 0.0, 0.32]), PLACE_APPROACH_TIME, quat
+    )
+    run_arm_motion_concurrent(io, None)
     io.arm.start_fixed(base.CARRY_FIXED, 2.0)
     run_arm_motion_concurrent(io, None)
-    run_wait_concurrent(io, 1.2, None)
+    run_wait_concurrent(io, 1.5, None)
 
 
 def _update_follower(
@@ -1892,6 +2055,25 @@ def start_arm_world_flexible(
     io.arm.start_fixed(target_fixed, duration, quat)
 
 
+def start_arm_world_quat(
+    io: RobotIO,
+    target_world: np.ndarray,
+    duration: float,
+    quat: np.ndarray,
+) -> None:
+    """用给定世界姿态启动机械臂运动（不做工具自旋展开）。
+
+    参数：
+        io: 任务层硬件端口。
+        target_world: 世界目标位置，shape=(3,)，单位 m。
+        duration: 运动时长，单位 s。
+        quat: 工具姿态四元数 wxyz（固定基座坐标系）。
+    重要性等级：A"""
+    target_fixed, _ = base.world_target_to_fixed(target_world)
+    print(f"  arm target world={np.round(target_world, 3)}")
+    io.arm.start_fixed(target_fixed, duration, np.asarray(quat, dtype=float))
+
+
 def execute_grasp_concurrent(
     io: RobotIO,
     target_pos: np.ndarray,
@@ -1904,11 +2086,14 @@ def execute_grasp_concurrent(
     target_pos: 视觉估计的物体世界位置，shape=(3,)，单位 m。
     follower: 可空的 CAR2 路径控制器。
 返回：
-    True 表示物体高度比抓取目标高出 0.04 m，初步判定抓取成功。
+    (是否抓取成功, 本次使用的工具自旋角)；物体高度比抓取目标高出 0.04 m 视为成功。
 异常：
     IK 不可达或姿态搜索失败时由底层抛 RuntimeError。
 重要性等级：A"""
     print("\n[GRASP] CAR1 arm starts while CAR2 continues driving")
+    # 夹爪几何实测（pinch 站点为原点）：夹持面闭合时覆盖 pinch 下方 17.7 mm 到上方
+    # 20.0 mm，张开时下沿只在 pinch 下方 4.5 mm。因此 pinch 必须停在离地 17.7~20.7 mm
+    # 这条带里才能夹住一根平躺的 Ø6 圆棒（见 base.PINCH_ABOVE_FLOOR）。
     approach = np.array([target_pos[0], target_pos[1], base.APPROACH_WORLD_Z])
     grasp = np.array([target_pos[0], target_pos[1], base.GRASP_WORLD_Z])
     lift = np.array([target_pos[0], target_pos[1], base.LIFT_WORLD_Z])
@@ -1930,7 +2115,7 @@ def execute_grasp_concurrent(
 
     obj = io.perception.object_truth()
     print(f"  cylinder after grasp: {np.round(obj, 4)}")
-    return bool(obj[2] > target_pos[2] + 0.04)
+    return bool(obj[2] > target_pos[2] + 0.04), spin_deg
 
 
 # ---------------------------------------------------------------------------
@@ -2190,22 +2375,32 @@ class DualCarMission:
         print("[并发调度] 二号车已收到出发指令，开始连续前往目标区。")
         run_wait_concurrent(self.io, 0.15, car2_follower)
 
-        print("[模块解耦] 一号车已经停车，采集一帧 D435i RGB/深度。")
-        print("\n[视觉识别] 采集相机帧并同步处理（同步以保证回归可复现）。")
+        print("[模块解耦] 一号车已经停车，先采一帧做粗定位。")
+        print("\n[视觉识别] 观测位约 2.1 m：只做粗定位（棒在图上约 60 像素长）。")
         # 刻意同步调用：若在后台线程里处理、主循环按 future.done() 边步进边等，
         # 推进帧数会取决于线程墙钟，同一 seed 两次可能走出不同轨迹（回归不可复现）。
         rgb, depth = self.io.perception.capture()
-        target = self.io.perception.detect_target(rgb, depth)
-        vision_error = float(np.linalg.norm(target - self.target_truth))
-        self.metrics.update(
-            vision_error_mm=vision_error * 1000.0,
-            vision_target=target.tolist(),
-            truth_target=self.target_truth.tolist(),
+        try:
+            coarse = self.io.perception.detect_target(rgb, depth)
+        except RuntimeError as exc:
+            # 观测位看不清时退回"目标区中心"这一任务级先验：目标点一定在该区内，
+            # 先验只用来决定把车开到哪里补拍，最终抓取点仍由近距测量给出。
+            coarse = np.array(
+                [
+                    0.5 * (TARGET_ZONE_X_MIN + TARGET_ZONE_X_MAX),
+                    0.5 * (TARGET_ZONE_Y_MIN + TARGET_ZONE_Y_MAX),
+                    OBJECT_Z,
+                ],
+                dtype=float,
+            )
+            print(f"[视觉识别] 观测位粗定位失败（{exc}），改用目标区中心先验")
+        print(
+            f"[视觉识别] 粗定位 ({coarse[0]:.3f}, {coarse[1]:.3f})"
         )
-        print("[模块解耦] 视觉完成；界面与感知已通过 PerceptionInterface 隔离。")
+        self.metrics.update(coarse_target=coarse.tolist())
 
         predicted_car1_pos = np.array(
-            [target[0], target[1] - 0.85], dtype=float
+            [coarse[0], coarse[1] - GRASP_STANDOFF_Y], dtype=float
         )
         dock_dy = CAR2_DOCK_CENTER_Y - predicted_car1_pos[1]
         dock_offset = max(
@@ -2235,7 +2430,81 @@ class DualCarMission:
             dock_offset=float(dock_offset),
         )
 
-        approach_xy = np.array([target[0], target[1] - 0.85], dtype=float)
+        # 近距测量位：停车距离 1.41 m，腕部相机离目标约 1.0 m、俯角约 45°。
+        # 不能直接开去 0.85 m 的抓取位再拍——D435i 相对工具固定下俯 28.5°，视场
+        # 下沿只到 49.8°，而 0.85 m 停车位下相机到目标的俯角是 66°，实测投影
+        # v=715（图像高 480），目标落在画面外。1.41 m 处约 88 像素长、2.6 像素宽。
+        measure_xy = np.array(
+            [coarse[0], coarse[1] - MEASURE_STANDOFF_Y], dtype=float
+        )
+        car1_measure = PathFollower(
+            self.car1,
+            [(float(measure_xy[0]), float(measure_xy[1]))],
+            self.cars,
+            snapshot_name=None,
+            waypoint_timeout=18.0,
+            final_tolerance=0.10,
+            max_speed=1.20,
+        )
+        run_followers_until_primary_done(self.io, car1_measure, car2_follower)
+
+        print("\n[视觉识别] 近距复测：由粗定位把车开到测量位，再采一帧精定位。")
+        target = None
+        for attempt in range(2):
+            rgb, depth = self.io.perception.capture()
+            try:
+                target = self.io.perception.detect_target(rgb, depth)
+                break
+            except RuntimeError as exc:
+                if attempt == 1:
+                    raise
+                # 粗定位偏 0.3 m 以上时，测量位会停得离目标过近，杆落到相机下视场
+                # 之外（画面下缘只剩细端、又落在搜索区外）。后退 0.35 m 再采一帧。
+                print(f"[视觉识别] 测量位识别失败（{exc}），后退 0.35 m 重试")
+                retry_xy = measure_xy - np.array([0.0, 0.35])
+                retry = PathFollower(
+                    self.car1,
+                    [(float(retry_xy[0]), float(retry_xy[1]))],
+                    self.cars,
+                    snapshot_name=None,
+                    waypoint_timeout=18.0,
+                    final_tolerance=0.10,
+                    max_speed=0.80,
+                )
+                run_followers_until_primary_done(
+                    self.io, retry, car2_follower
+                )
+        vision_error = float(np.linalg.norm(target - self.target_truth))
+        self.metrics.update(
+            vision_error_mm=vision_error * 1000.0,
+            vision_target=target.tolist(),
+            truth_target=self.target_truth.tolist(),
+        )
+        print("[模块解耦] 视觉完成；界面与感知已通过 PerceptionInterface 隔离。")
+
+        approach_xy = np.array(
+            [target[0], target[1] - GRASP_STANDOFF_Y], dtype=float
+        )
+        # 用实测抓取位重算二号车停靠点：上面那次是按**粗定位**算的，粗定位偏 0.2 m 时
+        # 最终两车中心距只剩 0.80 m（低于 0.82 m 安全阈值），二号车会被自己的雷达挡在
+        # 停靠点外、到点超时（实测 seed 0）。这里只换最后一个航点，集结航点不动。
+        dock_dy = CAR2_DOCK_CENTER_Y - approach_xy[1]
+        dock_offset = max(
+            DOCK_OFFSET_MIN,
+            float(np.sqrt(max(CAR2_MIN_SEPARATION**2 - dock_dy**2, 0.0)))
+            + DOCK_POSE_MARGIN,
+        )
+        car2_goal = np.array(
+            [approach_xy[0] + dock_offset, CAR2_DOCK_CENTER_Y]
+        )
+        car2_follower.replace_final_waypoint(
+            (float(car2_goal[0]), float(car2_goal[1]))
+        )
+        self.metrics.update(
+            car1_predicted_y=float(approach_xy[1]),
+            car2_goal=car2_goal.tolist(),
+            dock_offset=float(dock_offset),
+        )
         car1_align = PathFollower(
             self.car1,
             [(float(approach_xy[0]), float(approach_xy[1]))],
@@ -2245,11 +2514,20 @@ class DualCarMission:
             final_tolerance=0.12,
             max_speed=1.20,
         )
-        run_followers_until_primary_done(
-            self.io,
-            car1_align,
-            car2_follower,
-        )
+        # 最后这段 0.56 m 直线入位期间关掉"绕行同伴车"：两车的最小间距由停靠规划
+        # 保证（中心距 ≥ 0.82 m），而雷达一旦恰好在这时触发绕行，车会被带偏到抓取位
+        # 之外——实测 seed 0 绕行后停在 1.3 m 外、残余偏航 160°，机械臂直接够不到。
+        # 只关一号车这一段；二号车的雷达与之前各段都不受影响。
+        dynamic_roots = self.car1.lidar.dynamic_roots
+        self.car1.lidar.dynamic_roots = set()
+        try:
+            run_followers_until_primary_done(
+                self.io,
+                car1_align,
+                car2_follower,
+            )
+        finally:
+            self.car1.lidar.dynamic_roots = dynamic_roots
         # 抓取前把车头摆正：世界坐标解 IK 时基座航向直接决定抓取方向，残差几度可以，
         # 差太多会让夹爪斜着咬圆柱。但原地转是"轮胎打滑换旋转"——实测只为补 3° 就滑
         # 移 14 mm 且起停瞬间一次抖动，而这正好是"停在放射物前"该完全静止的时刻。
@@ -2271,7 +2549,7 @@ class DualCarMission:
 
         grasp_start = self.io.clock.now
         self.metrics["stage"] = "4_grasp"
-        grasp_success = execute_grasp_concurrent(
+        grasp_success, grasp_spin = execute_grasp_concurrent(
             self.io,
             target,
             car2_follower,
@@ -2343,23 +2621,46 @@ class DualCarMission:
                 -38.0,
             )
 
-        execute_cooperative_place(self.io, car2_pos[:2])
+        execute_cooperative_place(self.io, car2_pos[:2], grasp_spin)
+        if self.save_snapshots:
+            capture_snapshot(
+                "dual_bucket_release.png",
+                self.cars,
+                [float(car2_pos[0]), float(car2_pos[1]), 0.52],
+                1.5,
+                150.0,
+                -62.0,
+            )
         obj_after_drop = self.io.perception.object_truth()
-        drop_xy_error = float(
-            np.linalg.norm(obj_after_drop[:2] - car2_pos[:2])
+        # 判据用"筷子质心"而不是"粗端原点"：0.202 m 的杆塞进内径 0.11 m 的桶里只能斜躺，
+        # 粗端必然贴着桶壁（离桶心约 0.055 m），拿原点判会把正确投放误判成失败。
+        rod_axis = held_rod_axis()
+        rod_com = obj_after_drop + BUCKET_ROD_COM_Y * rod_axis
+        drop_xy_error = float(np.linalg.norm(rod_com[:2] - car2_pos[:2]))
+        drop_tilt_deg = float(
+            np.rad2deg(np.arccos(min(1.0, abs(float(rod_axis[2])))))
         )
+        # 判据：质心水平落在桶心 50 mm 内，且高度明显低于桶口——"架在桶沿上"会被排除。
         dropped_inside = bool(
             drop_xy_error < BUCKET_XY_TOL
-            and BUCKET_BASE_Z < float(obj_after_drop[2]) < BUCKET_OPENING_Z
+            and BUCKET_FLOOR_Z < float(rod_com[2]) < BUCKET_OPENING_Z - 0.03
+        )
+        print(
+            f"           投放后筷子质心=({rod_com[0]:.3f}, {rod_com[1]:.3f}, "
+            f"{rod_com[2]:.3f})，与桶心水平偏差={drop_xy_error:.3f} m，"
+            f"杆与竖直方向夹角={drop_tilt_deg:.1f}°"
         )
         if not dropped_inside:
             raise RuntimeError(
-                f"cooperative drop failed, xy error={drop_xy_error:.4f} m"
+                f"cooperative drop failed, xy error={drop_xy_error:.4f} m, "
+                f"tilt={drop_tilt_deg:.1f} deg"
             )
         self.metrics.update(
             drop_xy_error=drop_xy_error,
+            drop_tilt_deg=drop_tilt_deg,
             drop_inside=True,
             obj_after_drop=obj_after_drop.tolist(),
+            rod_com_after_drop=rod_com.tolist(),
         )
 
         self.metrics["stage"] = "6_return"
@@ -2420,12 +2721,14 @@ class DualCarMission:
         car1_final, _ = self.car1.pose()
         car2_final, _ = self.car2.pose()
         obj_final = self.io.perception.object_truth()
+        # 同样用质心判：筷子在桶里是斜靠着的，粗端原点离桶心固定差半个杆长。
+        final_com = obj_final + BUCKET_ROD_COM_Y * held_rod_axis()
         final_xy_error = float(
-            np.linalg.norm(obj_final[:2] - car2_final[:2])
+            np.linalg.norm(final_com[:2] - car2_final[:2])
         )
         final_inside = bool(
             final_xy_error < BUCKET_XY_TOL
-            and BUCKET_BASE_Z < float(obj_final[2]) < BUCKET_OPENING_Z
+            and BUCKET_FLOOR_Z < float(final_com[2]) < BUCKET_OPENING_Z - 0.03
         )
         car1_home_error = float(np.linalg.norm(car1_final[:2] - CAR1_START))
         car2_home_error = float(np.linalg.norm(car2_final[:2] - CAR2_START))
@@ -2600,8 +2903,9 @@ def run_mission(
 副作用：
     推进长时间仿真、打印阶段日志，最后打印一行 RESULT_JSON。
 重要性等级：A"""
+    ok = False
     try:
-        mission.run()
+        ok = bool(mission.run())
     except KeyboardInterrupt:
         raise
     except Exception as exc:
@@ -2613,7 +2917,7 @@ def run_mission(
         seed=seed,
         wall_time_s=round(time.perf_counter() - started, 3),
         sim_time_s=round(float(mission.io.clock.now), 3),
-        ok=metrics.get("stage") == "done",
+        ok=ok,
     )
     metrics.setdefault("error", None)
     print("RESULT_JSON: " + json.dumps(metrics, ensure_ascii=False, default=float))

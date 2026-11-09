@@ -16,6 +16,9 @@
     <texture type="2d" name="ground_tex" builtin="checker" mark="edge" rgb1="0.25 0.28 0.30" rgb2="0.12 0.14 0.16" markrgb="0.65 0.65 0.65" width="300" height="300" />
     <material name="ground_mat" texture="ground_tex" texuniform="true" texrepeat="12 12" reflectance="0.15" />
     <material name="radio_mat" rgba="1.0 0.72 0.05 1" />
+    <!-- 不锈钢本色：中性银灰、高光、带一点环境反射。视觉识别不依赖颜色，见视觉管线。 -->
+    <material name="steel_mat" rgba="0.63 0.65 0.68 1" specular="0.85" shininess="0.55" reflectance="0.12" />
+    <mesh name="chopstick_shell" file="../../chopstick/chopstick.obj" />
     <material name="bucket_mat" rgba="0.18 0.52 0.72 1" />
     <material name="start_line_mat" rgba="1.0 0.20 0.12 1" />
     <material name="target_zone_mat" rgba="0.05 0.85 0.55 1" />
@@ -33,18 +36,20 @@
           contype="0" conaffinity="0" />
 
     <!-- Target rectangle: 0.70 m x 0.60 m, X -0.35..0.35 m, Y 20.70..21.30 m.
-         与 dual_car_pick_place.py 的 TARGET_ZONE_* 常量一一对应。 -->
-    <geom name="target_zone_x_min" type="box" size="0.018 0.30 0.006"
-          pos="-0.35 21.00 0.006" material="target_zone_mat"
+         与 dual_car_pick_place.py 的 TARGET_ZONE_* 常量一一对应。
+         只做视觉标识（contype=0），按地面标线的真实形态做成 0.8 mm 厚的贴地色带：早先
+         当成 12 mm 高的矮墙，深度图里会和横跨边框的筷子连成一个连通域，把视觉定位带偏。 -->
+    <geom name="target_zone_x_min" type="box" size="0.018 0.30 0.0004"
+          pos="-0.35 21.00 0.0004" material="target_zone_mat"
           contype="0" conaffinity="0" />
-    <geom name="target_zone_x_max" type="box" size="0.018 0.30 0.006"
-          pos="0.35 21.00 0.006" material="target_zone_mat"
+    <geom name="target_zone_x_max" type="box" size="0.018 0.30 0.0004"
+          pos="0.35 21.00 0.0004" material="target_zone_mat"
           contype="0" conaffinity="0" />
-    <geom name="target_zone_y_min" type="box" size="0.35 0.018 0.006"
-          pos="0 20.70 0.006" material="target_zone_mat"
+    <geom name="target_zone_y_min" type="box" size="0.35 0.018 0.0004"
+          pos="0 20.70 0.0004" material="target_zone_mat"
           contype="0" conaffinity="0" />
-    <geom name="target_zone_y_max" type="box" size="0.35 0.018 0.006"
-          pos="0 21.30 0.006" material="target_zone_mat"
+    <geom name="target_zone_y_max" type="box" size="0.35 0.018 0.0004"
+          pos="0 21.30 0.0004" material="target_zone_mat"
           contype="0" conaffinity="0" />
 
     <!-- Six sparse obstacles in the long transit corridor Y=5..15 m. -->
@@ -79,9 +84,25 @@
             contype="1" conaffinity="1" condim="3" solref="0.005 1"/>
     </body>
 
-    <body name="grasp_object" pos="0 21.0 0.01">
+    <!-- 核应急放射源：不锈钢监测棒（"筷子"）。
+         粗端 Ø6 mm × 33 mm、细端 Ø5 mm × 169 mm，总长 202 mm；密度按不锈钢 7930 kg/m³，
+         整件约 33.5 g、质心距粗端约 92 mm。
+         原点放在**粗端圆柱中心**：真值点、视觉输出的粗端点、抓取点三者天然重合。
+         碰撞体是两个标准圆柱，长度各缩 0.3 mm 代表端面 45° 倒角（Ø6×32.4 / Ø5×168.4），
+         半径不变，滚动包络仍是两段圆柱；外观由 object_shell 的倒角网格提供（group 2 可见、
+         碰撞体放 group 3 只参与物理，避免两层表面共面闪烁）。 -->
+    <body name="grasp_object" pos="0 21.0 0.003">
       <freejoint name="obj_free" />
-      <geom name="object_geom" type="cylinder" size="0.01 0.025" quat="0.707107 0 0.707107 0" material="radio_mat" mass="0.08" contype="1" conaffinity="1" friction="5.0 2.0 1.0" condim="6" solref="0.004 1" solimp="0.95 0.99 0.001" />
+      <geom name="object_thick_geom" type="cylinder" size="0.003 0.0162" quat="0.707107 0 0.707107 0"
+            material="steel_mat" density="7930" group="3"
+            contype="1" conaffinity="1" friction="1.0 0.02 0.03" condim="6"
+            solref="0.004 1" solimp="0.95 0.99 0.001" />
+      <geom name="object_thin_geom" type="cylinder" size="0.0025 0.0842" pos="0.101 0 0" quat="0.707107 0 0.707107 0"
+            material="steel_mat" density="7930" group="3"
+            contype="1" conaffinity="1" friction="1.0 0.02 0.03" condim="6"
+            solref="0.004 1" solimp="0.95 0.99 0.001" />
+      <geom name="object_shell" type="mesh" mesh="chopstick_shell" material="steel_mat"
+            group="2" contype="0" conaffinity="0" density="0" mass="0" />
     </body>
 
     
@@ -106,5 +127,6 @@
     <position name="car2_wheel_fl_steer_act" joint="car2_wheel_fl_steer_joint" kp="800" kv="40" ctrlrange="-0.7 0.7" forcerange="-120 120" />
     <position name="car2_wheel_fr_steer_act" joint="car2_wheel_fr_steer_joint" kp="800" kv="40" ctrlrange="-0.7 0.7" forcerange="-120 120" />
 
-    <general class="2f85" name="fingers_actuator" tendon="split" forcerange="-5 5" ctrlrange="0 255" gainprm="0.3137255 0 0" biasprm="0 -100 -10" /></actuator>
+    <!-- 夹持力上限 12 N：筷子细端悬臂 160 mm，力矩大，弱夹持会在搬运中打转。 -->
+    <general class="2f85" name="fingers_actuator" tendon="split" forcerange="-12 12" ctrlrange="0 255" gainprm="0.3137255 0 0" biasprm="0 -100 -10" /></actuator>
 </mujoco>

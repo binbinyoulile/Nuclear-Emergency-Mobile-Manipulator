@@ -429,49 +429,172 @@
                 solimp="0.95 0.99 0.001" />
         </body>
 
-        <!-- Shield bucket fixed at the centre of the top deck. -->
+        <!-- Shield bucket: 32 边圆筒，内径 Ø240、深 260（底 20 + 壁 240）。
+             桶口比 202 mm 的筷子长，夹住粗端的机械臂把质心对准桶心后松爪，
+             筷子整根自由落进桶底。32 边的视觉半径误差 < 0.3 mm；碰撞仍用标准盒体，
+             因为 MuJoCo 的 mesh 碰撞只支持凸包，做不出空心筒。 -->
         <body name="car2_shield_bucket" pos="0 0 0.40356">
-          <geom name="car2_bucket_bottom" type="cylinder" size="0.05 0.01" pos="0 0 0.01"
+          <geom name="car2_bucket_bottom" type="cylinder" size="0.1200 0.01" pos="0 0 0.01"
                 mass="1.0" material="bucket_mat" contype="1" conaffinity="1"
                 friction="2.0 1.0 0.5" condim="6" solref="0.004 1"
                 solimp="0.95 0.99 0.001" />
-          <geom name="car2_bucket_wall_0" type="box" size="0.005 0.021 0.09"
-                pos="0.055 0 0.11" quat="1 0 0 0" mass="0.25"
+          <geom name="car2_bucket_wall_0" type="box" size="0.005 0.01206 0.120"
+                pos="0.125000 0.000000 0.1400" quat="1.000000 0 0 0.000000" mass="0.0625"
                 material="bucket_mat" contype="1" conaffinity="1"
                 friction="2.0 1.0 0.5" condim="6" solref="0.004 1"
                 solimp="0.95 0.99 0.001" />
-          <geom name="car2_bucket_wall_1" type="box" size="0.005 0.021 0.09"
-                pos="0.038891 0.038891 0.11" quat="0.92388 0 0 0.382683" mass="0.25"
+          <geom name="car2_bucket_wall_1" type="box" size="0.005 0.01206 0.120"
+                pos="0.122598 0.024386 0.1400" quat="0.995185 0 0 0.098017" mass="0.0625"
                 material="bucket_mat" contype="1" conaffinity="1"
                 friction="2.0 1.0 0.5" condim="6" solref="0.004 1"
                 solimp="0.95 0.99 0.001" />
-          <geom name="car2_bucket_wall_2" type="box" size="0.005 0.021 0.09"
-                pos="0 0.055 0.11" quat="0.707107 0 0 0.707107" mass="0.25"
+          <geom name="car2_bucket_wall_2" type="box" size="0.005 0.01206 0.120"
+                pos="0.115485 0.047835 0.1400" quat="0.980785 0 0 0.195090" mass="0.0625"
                 material="bucket_mat" contype="1" conaffinity="1"
                 friction="2.0 1.0 0.5" condim="6" solref="0.004 1"
                 solimp="0.95 0.99 0.001" />
-          <geom name="car2_bucket_wall_3" type="box" size="0.005 0.021 0.09"
-                pos="-0.038891 0.038891 0.11" quat="0.382683 0 0 0.92388" mass="0.25"
+          <geom name="car2_bucket_wall_3" type="box" size="0.005 0.01206 0.120"
+                pos="0.103934 0.069446 0.1400" quat="0.956940 0 0 0.290285" mass="0.0625"
                 material="bucket_mat" contype="1" conaffinity="1"
                 friction="2.0 1.0 0.5" condim="6" solref="0.004 1"
                 solimp="0.95 0.99 0.001" />
-          <geom name="car2_bucket_wall_4" type="box" size="0.005 0.021 0.09"
-                pos="-0.055 0 0.11" quat="0 0 0 1" mass="0.25"
+          <geom name="car2_bucket_wall_4" type="box" size="0.005 0.01206 0.120"
+                pos="0.088388 0.088388 0.1400" quat="0.923880 0 0 0.382683" mass="0.0625"
                 material="bucket_mat" contype="1" conaffinity="1"
                 friction="2.0 1.0 0.5" condim="6" solref="0.004 1"
                 solimp="0.95 0.99 0.001" />
-          <geom name="car2_bucket_wall_5" type="box" size="0.005 0.021 0.09"
-                pos="-0.038891 -0.038891 0.11" quat="-0.382683 0 0 0.92388" mass="0.25"
+          <geom name="car2_bucket_wall_5" type="box" size="0.005 0.01206 0.120"
+                pos="0.069446 0.103934 0.1400" quat="0.881921 0 0 0.471397" mass="0.0625"
                 material="bucket_mat" contype="1" conaffinity="1"
                 friction="2.0 1.0 0.5" condim="6" solref="0.004 1"
                 solimp="0.95 0.99 0.001" />
-          <geom name="car2_bucket_wall_6" type="box" size="0.005 0.021 0.09"
-                pos="0 -0.055 0.11" quat="-0.707107 0 0 0.707107" mass="0.25"
+          <geom name="car2_bucket_wall_6" type="box" size="0.005 0.01206 0.120"
+                pos="0.047835 0.115485 0.1400" quat="0.831470 0 0 0.555570" mass="0.0625"
                 material="bucket_mat" contype="1" conaffinity="1"
                 friction="2.0 1.0 0.5" condim="6" solref="0.004 1"
                 solimp="0.95 0.99 0.001" />
-          <geom name="car2_bucket_wall_7" type="box" size="0.005 0.021 0.09"
-                pos="0.038891 -0.038891 0.11" quat="-0.92388 0 0 0.382683" mass="0.25"
+          <geom name="car2_bucket_wall_7" type="box" size="0.005 0.01206 0.120"
+                pos="0.024386 0.122598 0.1400" quat="0.773010 0 0 0.634393" mass="0.0625"
+                material="bucket_mat" contype="1" conaffinity="1"
+                friction="2.0 1.0 0.5" condim="6" solref="0.004 1"
+                solimp="0.95 0.99 0.001" />
+          <geom name="car2_bucket_wall_8" type="box" size="0.005 0.01206 0.120"
+                pos="0.000000 0.125000 0.1400" quat="0.707107 0 0 0.707107" mass="0.0625"
+                material="bucket_mat" contype="1" conaffinity="1"
+                friction="2.0 1.0 0.5" condim="6" solref="0.004 1"
+                solimp="0.95 0.99 0.001" />
+          <geom name="car2_bucket_wall_9" type="box" size="0.005 0.01206 0.120"
+                pos="-0.024386 0.122598 0.1400" quat="0.634393 0 0 0.773010" mass="0.0625"
+                material="bucket_mat" contype="1" conaffinity="1"
+                friction="2.0 1.0 0.5" condim="6" solref="0.004 1"
+                solimp="0.95 0.99 0.001" />
+          <geom name="car2_bucket_wall_10" type="box" size="0.005 0.01206 0.120"
+                pos="-0.047835 0.115485 0.1400" quat="0.555570 0 0 0.831470" mass="0.0625"
+                material="bucket_mat" contype="1" conaffinity="1"
+                friction="2.0 1.0 0.5" condim="6" solref="0.004 1"
+                solimp="0.95 0.99 0.001" />
+          <geom name="car2_bucket_wall_11" type="box" size="0.005 0.01206 0.120"
+                pos="-0.069446 0.103934 0.1400" quat="0.471397 0 0 0.881921" mass="0.0625"
+                material="bucket_mat" contype="1" conaffinity="1"
+                friction="2.0 1.0 0.5" condim="6" solref="0.004 1"
+                solimp="0.95 0.99 0.001" />
+          <geom name="car2_bucket_wall_12" type="box" size="0.005 0.01206 0.120"
+                pos="-0.088388 0.088388 0.1400" quat="0.382683 0 0 0.923880" mass="0.0625"
+                material="bucket_mat" contype="1" conaffinity="1"
+                friction="2.0 1.0 0.5" condim="6" solref="0.004 1"
+                solimp="0.95 0.99 0.001" />
+          <geom name="car2_bucket_wall_13" type="box" size="0.005 0.01206 0.120"
+                pos="-0.103934 0.069446 0.1400" quat="0.290285 0 0 0.956940" mass="0.0625"
+                material="bucket_mat" contype="1" conaffinity="1"
+                friction="2.0 1.0 0.5" condim="6" solref="0.004 1"
+                solimp="0.95 0.99 0.001" />
+          <geom name="car2_bucket_wall_14" type="box" size="0.005 0.01206 0.120"
+                pos="-0.115485 0.047835 0.1400" quat="0.195090 0 0 0.980785" mass="0.0625"
+                material="bucket_mat" contype="1" conaffinity="1"
+                friction="2.0 1.0 0.5" condim="6" solref="0.004 1"
+                solimp="0.95 0.99 0.001" />
+          <geom name="car2_bucket_wall_15" type="box" size="0.005 0.01206 0.120"
+                pos="-0.122598 0.024386 0.1400" quat="0.098017 0 0 0.995185" mass="0.0625"
+                material="bucket_mat" contype="1" conaffinity="1"
+                friction="2.0 1.0 0.5" condim="6" solref="0.004 1"
+                solimp="0.95 0.99 0.001" />
+          <geom name="car2_bucket_wall_16" type="box" size="0.005 0.01206 0.120"
+                pos="-0.125000 0.000000 0.1400" quat="0.000000 0 0 1.000000" mass="0.0625"
+                material="bucket_mat" contype="1" conaffinity="1"
+                friction="2.0 1.0 0.5" condim="6" solref="0.004 1"
+                solimp="0.95 0.99 0.001" />
+          <geom name="car2_bucket_wall_17" type="box" size="0.005 0.01206 0.120"
+                pos="-0.122598 -0.024386 0.1400" quat="-0.098017 0 0 0.995185" mass="0.0625"
+                material="bucket_mat" contype="1" conaffinity="1"
+                friction="2.0 1.0 0.5" condim="6" solref="0.004 1"
+                solimp="0.95 0.99 0.001" />
+          <geom name="car2_bucket_wall_18" type="box" size="0.005 0.01206 0.120"
+                pos="-0.115485 -0.047835 0.1400" quat="-0.195090 0 0 0.980785" mass="0.0625"
+                material="bucket_mat" contype="1" conaffinity="1"
+                friction="2.0 1.0 0.5" condim="6" solref="0.004 1"
+                solimp="0.95 0.99 0.001" />
+          <geom name="car2_bucket_wall_19" type="box" size="0.005 0.01206 0.120"
+                pos="-0.103934 -0.069446 0.1400" quat="-0.290285 0 0 0.956940" mass="0.0625"
+                material="bucket_mat" contype="1" conaffinity="1"
+                friction="2.0 1.0 0.5" condim="6" solref="0.004 1"
+                solimp="0.95 0.99 0.001" />
+          <geom name="car2_bucket_wall_20" type="box" size="0.005 0.01206 0.120"
+                pos="-0.088388 -0.088388 0.1400" quat="-0.382683 0 0 0.923880" mass="0.0625"
+                material="bucket_mat" contype="1" conaffinity="1"
+                friction="2.0 1.0 0.5" condim="6" solref="0.004 1"
+                solimp="0.95 0.99 0.001" />
+          <geom name="car2_bucket_wall_21" type="box" size="0.005 0.01206 0.120"
+                pos="-0.069446 -0.103934 0.1400" quat="-0.471397 0 0 0.881921" mass="0.0625"
+                material="bucket_mat" contype="1" conaffinity="1"
+                friction="2.0 1.0 0.5" condim="6" solref="0.004 1"
+                solimp="0.95 0.99 0.001" />
+          <geom name="car2_bucket_wall_22" type="box" size="0.005 0.01206 0.120"
+                pos="-0.047835 -0.115485 0.1400" quat="-0.555570 0 0 0.831470" mass="0.0625"
+                material="bucket_mat" contype="1" conaffinity="1"
+                friction="2.0 1.0 0.5" condim="6" solref="0.004 1"
+                solimp="0.95 0.99 0.001" />
+          <geom name="car2_bucket_wall_23" type="box" size="0.005 0.01206 0.120"
+                pos="-0.024386 -0.122598 0.1400" quat="-0.634393 0 0 0.773010" mass="0.0625"
+                material="bucket_mat" contype="1" conaffinity="1"
+                friction="2.0 1.0 0.5" condim="6" solref="0.004 1"
+                solimp="0.95 0.99 0.001" />
+          <geom name="car2_bucket_wall_24" type="box" size="0.005 0.01206 0.120"
+                pos="-0.000000 -0.125000 0.1400" quat="-0.707107 0 0 0.707107" mass="0.0625"
+                material="bucket_mat" contype="1" conaffinity="1"
+                friction="2.0 1.0 0.5" condim="6" solref="0.004 1"
+                solimp="0.95 0.99 0.001" />
+          <geom name="car2_bucket_wall_25" type="box" size="0.005 0.01206 0.120"
+                pos="0.024386 -0.122598 0.1400" quat="-0.773010 0 0 0.634393" mass="0.0625"
+                material="bucket_mat" contype="1" conaffinity="1"
+                friction="2.0 1.0 0.5" condim="6" solref="0.004 1"
+                solimp="0.95 0.99 0.001" />
+          <geom name="car2_bucket_wall_26" type="box" size="0.005 0.01206 0.120"
+                pos="0.047835 -0.115485 0.1400" quat="-0.831470 0 0 0.555570" mass="0.0625"
+                material="bucket_mat" contype="1" conaffinity="1"
+                friction="2.0 1.0 0.5" condim="6" solref="0.004 1"
+                solimp="0.95 0.99 0.001" />
+          <geom name="car2_bucket_wall_27" type="box" size="0.005 0.01206 0.120"
+                pos="0.069446 -0.103934 0.1400" quat="-0.881921 0 0 0.471397" mass="0.0625"
+                material="bucket_mat" contype="1" conaffinity="1"
+                friction="2.0 1.0 0.5" condim="6" solref="0.004 1"
+                solimp="0.95 0.99 0.001" />
+          <geom name="car2_bucket_wall_28" type="box" size="0.005 0.01206 0.120"
+                pos="0.088388 -0.088388 0.1400" quat="-0.923880 0 0 0.382683" mass="0.0625"
+                material="bucket_mat" contype="1" conaffinity="1"
+                friction="2.0 1.0 0.5" condim="6" solref="0.004 1"
+                solimp="0.95 0.99 0.001" />
+          <geom name="car2_bucket_wall_29" type="box" size="0.005 0.01206 0.120"
+                pos="0.103934 -0.069446 0.1400" quat="-0.956940 0 0 0.290285" mass="0.0625"
+                material="bucket_mat" contype="1" conaffinity="1"
+                friction="2.0 1.0 0.5" condim="6" solref="0.004 1"
+                solimp="0.95 0.99 0.001" />
+          <geom name="car2_bucket_wall_30" type="box" size="0.005 0.01206 0.120"
+                pos="0.115485 -0.047835 0.1400" quat="-0.980785 0 0 0.195090" mass="0.0625"
+                material="bucket_mat" contype="1" conaffinity="1"
+                friction="2.0 1.0 0.5" condim="6" solref="0.004 1"
+                solimp="0.95 0.99 0.001" />
+          <geom name="car2_bucket_wall_31" type="box" size="0.005 0.01206 0.120"
+                pos="0.122598 -0.024386 0.1400" quat="-0.995185 0 0 0.098017" mass="0.0625"
                 material="bucket_mat" contype="1" conaffinity="1"
                 friction="2.0 1.0 0.5" condim="6" solref="0.004 1"
                 solimp="0.95 0.99 0.001" />
