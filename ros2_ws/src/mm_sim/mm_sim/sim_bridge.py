@@ -43,7 +43,7 @@ from rclpy.qos import (
 )
 from rosgraph_msgs.msg import Clock
 from sensor_msgs.msg import CameraInfo, Image, JointState
-from std_msgs.msg import Float64MultiArray, Int32
+from std_msgs.msg import Bool, Float64MultiArray, Int32
 from std_srvs.srv import Trigger
 from tf2_ros import TransformBroadcaster
 
@@ -100,6 +100,7 @@ class SimBridge(Node):
         self._grip_cmd = 0.0
         self._capture_request = False
         self._snapshot_queue: list[str] = []
+        self._peer_avoidance = True
 
         # —— 仅帧循环线程读写的状态 ——
         self._frame = 0
@@ -221,6 +222,9 @@ class SimBridge(Node):
         self.create_subscription(
             GripperCommand, "/car1/gripper/command", self._on_gripper_command, qos
         )
+        self.create_subscription(
+            Bool, "/car1/lidar/ignore_peer", self._on_peer_avoidance, qos
+        )
         self._arm_joint_pub = self.create_publisher(
             JointState, "/car1/arm/joint_states", qos
         )
@@ -242,6 +246,9 @@ class SimBridge(Node):
 
         self._truth_pub = self.create_publisher(
             PoseStamped, "/sim/target_truth", qos
+        )
+        self._object_pub = self.create_publisher(
+            PoseStamped, "/sim/object_pose", qos
         )
         self._contacts_pub = self.create_publisher(Int32, "/sim/contacts", qos)
 
@@ -270,6 +277,10 @@ class SimBridge(Node):
     def _on_gripper_command(self, msg: GripperCommand) -> None:
         with self._cmd_lock:
             self._grip_cmd = float(msg.position)
+
+    def _on_peer_avoidance(self, msg) -> None:
+        """任务层要求忽略/恢复"绕行同伴车"（最后一段直线入位用）。"""
+        self._peer_avoidance = bool(msg.data)
 
     # ------------------------------------------------------------------
     # 服务
@@ -316,6 +327,8 @@ class SimBridge(Node):
                 self._apply_commands()
                 self._sim.step()
                 self._sim_time = float(self._data.time)
+                if self._peer_avoidance != self._cars[0].lidar.peer_avoidance:
+                    self._cars[0].lidar.peer_avoidance = self._peer_avoidance
                 for car in self._cars:
                     car.lidar.scan_if_due()
                 self._refresh_arm_state()
@@ -390,6 +403,7 @@ class SimBridge(Node):
         self._publish_arm_joints(stamp)
         self._publish_gripper(stamp)
         self._publish_truth(stamp)
+        self._publish_object(stamp)
         self._contacts_pub.publish(Int32(data=int(self._cars[0].contacts_with(self._cars[1]))))
         self._publish_tf(stamp)
 
@@ -464,6 +478,29 @@ class SimBridge(Node):
         msg.pose.orientation.w = 1.0
         self._truth_pub.publish(msg)
 
+    def _publish_object(self, stamp: Time) -> None:
+        """被操作对象的**实时**位姿。
+
+        与 ``/sim/target_truth`` 的区别：后者是生成时的落点（姿态恒为单位四元数），
+        只用于视觉误差验收；本话题给的是夹在夹爪里、正在被搬运的那根杆，
+        投放对中（夹持点→质心偏移）和投放判据都必须用它。
+        """
+        qpos = self._data.qpos
+        adr = self._base.OBJ_QADR
+        msg = PoseStamped()
+        msg.header.stamp = stamp
+        msg.header.frame_id = "map"
+        msg.pose.position = Point(
+            x=float(qpos[adr]), y=float(qpos[adr + 1]), z=float(qpos[adr + 2])
+        )
+        msg.pose.orientation = Quaternion(
+            w=float(qpos[adr + 3]),
+            x=float(qpos[adr + 4]),
+            y=float(qpos[adr + 5]),
+            z=float(qpos[adr + 6]),
+        )
+        self._object_pub.publish(msg)
+
     def _publish_camera_info(self, stamp: Time) -> None:
         """按 MuJoCo 相机模型给出针孔内参（方像素，主点居中），只发一次。"""
         if getattr(self, "_camera_info_sent", False):
@@ -517,6 +554,19 @@ class SimBridge(Node):
             "car1/camera_link",
             (float(cam_pos[0]), float(cam_pos[1]), float(cam_pos[2])),
             (float(quat[1]), float(quat[2]), float(quat[3]), float(quat[0])),
+        )
+
+        # 夹持点：投放对中要量"夹持点 → 质心"的实际偏移，任务层由此拿 tool_position()
+        pinch_pos = self._data.site_xpos[self._legacy.PINCH_SITE]
+        pinch_mat = self._data.site_xmat[self._legacy.PINCH_SITE].reshape(3, 3)
+        pq = np.zeros(4)
+        self._mujoco.mju_mat2Quat(pq, pinch_mat.reshape(9))
+        self._send_tf(
+            stamp,
+            "car1/arm_base_link",
+            "car1/pinch",
+            (float(pinch_pos[0]), float(pinch_pos[1]), float(pinch_pos[2])),
+            (float(pq[1]), float(pq[2]), float(pq[3]), float(pq[0])),
         )
 
     def _send_tf(self, stamp, parent, child, xyz, xyzw) -> None:

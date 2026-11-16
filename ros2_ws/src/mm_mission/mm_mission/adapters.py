@@ -1,39 +1,48 @@
 """把 ROS 话题封装成任务层的硬件端口。
 
-与仓库根目录 ``robot_interface.py`` 的 ABC 一一对应
-（Clock / ChassisInterface / ArmInterface / GripperInterface / PerceptionInterface）：
-方法签名刻意保持一致，阶段 2 合并两边时只需补上基类声明。
+直接实现仓库根 ``robot_interface.py`` 的抽象基类（Clock / Lidar / Chassis / Arm /
+Gripper / Perception）：方法签名由 ABC 强制检查，少实现一个方法在构造对象时就会
+报 TypeError，而不是跑到任务中途才 AttributeError。
 
-感知接口已经按设计草案收敛为 ``estimate_target()``：任务层不该关心像素，
-取图与检测都在 ``mm_target_localizer`` 里完成。
+感知接口已经按设计草案收敛为 ``estimate_target()`` 与 ``object_pose()``：
+任务层不该关心像素，取图与检测都在 ``mm_target_localizer`` 里完成。
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-
 import numpy as np
+
+from robot_interface import (
+    ArmInterface,
+    ChassisInterface,
+    Clock,
+    GripperInterface,
+    LidarInterface,
+    PerceptionInterface,
+    RobotIO,
+)
 
 from .trajectory import JointTrajectory, ScalarTrajectory
 
-
-@dataclass(frozen=True)
-class RobotIO:
-    """任务层握有的全部输入输出端口（与 robot_interface.RobotIO 同构）。"""
-
-    clock: "RosClock"
-    chassis: tuple["RosChassis", ...]
-    arm: "RosArm"
-    gripper: "RosGripper"
-    perception: "RosPerception"
-    viewer: object | None = field(default=None, repr=False)
+__all__ = [
+    "RobotIO",
+    "RosArm",
+    "RosChassis",
+    "RosClock",
+    "RosGripper",
+    "RosPerception",
+]
 
 
-class RosClock:
+class RosClock(Clock):
     """虚拟时钟：``step()`` 阻塞到仿真推进一帧。
 
     仿真时间由 mm_sim_bridge 发布，``step()`` 等到 ``/clock`` 递增即返回，
     因此任务层的每一轮"读状态 → 算指令 → 写指令"都恰好对应一个 20 ms 控制帧。
+
+    每帧把两车最近一次轮速指令重发一遍：桥的帧同步要求每帧各收到一条
+    ``wheel_command``，而任务层在机械臂动作、视��等待等阶段不会重新下发底盘指令
+    （仿真里 ctrl 会一直保持，话题里不会）。重发等于把"指令保持"这个语义补齐。
     """
 
     def __init__(self, node) -> None:
@@ -49,10 +58,15 @@ class RosClock:
 
     def step(self) -> None:
         self._node.wait_next_frame()
+        self._node.flush_wheel_commands()
 
 
-class LidarView:
-    """雷达派生量的只读视图，字段名与仿真侧 ``LidarScanner`` 保持一致。"""
+class LidarView(LidarInterface):
+    """雷达派生量的只读视图，字段名与仿真侧 ``LidarScanner`` 保持一致。
+
+    扫描本身在桥的帧循环里按 10 Hz 做（仿真物理的一部分），任务侧只读结果，
+    所以 ``scan()``/``scan_if_due()`` 是空操作。
+    """
 
     __slots__ = (
         "front_blocked",
@@ -64,9 +78,12 @@ class LidarView:
         "rear_min",
         "rear_clear",
         "last_scan_time",
+        "_node",
+        "_peer_avoidance",
     )
 
-    def __init__(self) -> None:
+    def __init__(self, node) -> None:
+        self._node = node
         self.front_blocked = False
         self.front_min = float("inf")
         self.front_lateral = float("inf")
@@ -76,6 +93,7 @@ class LidarView:
         self.rear_min = float("inf")
         self.rear_clear = float("inf")
         self.last_scan_time = -1e9
+        self._peer_avoidance = True
 
     def update(self, msg) -> None:
         self.front_blocked = bool(msg.front_blocked)
@@ -90,22 +108,39 @@ class LidarView:
             msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
         )
 
+    @property
+    def peer_avoidance(self) -> bool:
+        return self._peer_avoidance
 
-class RosChassis:
+    @peer_avoidance.setter
+    def peer_avoidance(self, value: bool) -> None:
+        # 桥在帧边界读这个话题决定要不要把同伴车算进动态障碍
+        self._peer_avoidance = bool(value)
+        self._node.publish_peer_avoidance(self._peer_avoidance)
+
+    def scan(self) -> None:
+        """空操作：扫描由仿真桥按 10 Hz 完成。"""
+
+    def scan_if_due(self) -> None:
+        """空操作：扫描由仿真桥按 10 Hz 完成。"""
+
+
+class RosChassis(ChassisInterface):
     """单台底盘的读写端口。
 
     ``left_cmd/right_cmd/steer_cmd`` 是控制器自己的输出缓存（与单进程实现一致），
-    不属于硬件语义，真机侧不需要关心。
+    ``min_other_separation`` 由路径控制器逐帧刷新。
     """
 
     def __init__(self, node, index: int) -> None:
         self.name = f"CAR{index + 1}"
         self._node = node
         self._index = index
-        self.lidar = LidarView()
+        self.lidar = LidarView(node)
         self.left_cmd = 0.0
         self.right_cmd = 0.0
         self.steer_cmd = 0.0
+        self.min_other_separation = float("inf")
 
     def pose(self) -> tuple[np.ndarray, float]:
         pos, yaw, _, _ = self._node.odom(self._index)
@@ -120,9 +155,6 @@ class RosChassis:
         self.steer_cmd = float(steer)
         self._node.publish_wheel(self._index, left, right, steer)
 
-    # 单进程实现里的历史命名，控制器沿用同一调用
-    set_motion = set_wheels
-
     def wheel_speeds(self) -> np.ndarray:
         state = self._node.chassis_joint(self._index)
         if state is None:
@@ -133,11 +165,12 @@ class RosChassis:
         return int(self._node.contacts)
 
 
-class RosArm:
+class RosArm(ArmInterface):
     """六轴机械臂端口：插值在任务侧完成，逆解走驱动侧服务。
 
     ``start_fixed`` 的入参是 **car1/arm_base_link** 坐标系，通过 TF 换算到世界系后
-    再请求逆解；``start_world`` 直接吃世界坐标。
+    再请求逆解；``start_world`` 直接吃世界坐标。姿态参数本阶段不生效
+    （桥的逆解服务固定用 TARGET_QUAT，真机接 servoj 时再启用）。
     """
 
     def __init__(self, node, clock: RosClock) -> None:
@@ -157,9 +190,10 @@ class RosArm:
 
     def start_fixed(self, target_pos_fixed, duration, target_quat=None) -> None:
         target_world = self._node.arm_base_to_world(np.asarray(target_pos_fixed, float))
-        self.start_world(target_world, duration)
+        self.start_world(target_world, duration, target_quat)
 
-    def start_world(self, target_pos_world, duration: float) -> None:
+    def start_world(self, target_pos_world, duration, target_quat=None) -> None:
+        del target_quat  # 姿态由驱动侧的逆解服务固定，见类文档
         q_ik, error = self._node.solve_ik_world(np.asarray(target_pos_world, float))
         if error > 0.02:
             raise RuntimeError(f"IK 残差过大：{error * 1000:.1f} mm，目标不可达")
@@ -185,12 +219,17 @@ class RosArm:
     def active(self) -> bool:
         return self._traj is not None
 
+    def tool_position(self) -> np.ndarray:
+        """夹持点（pinch 站点）的世界坐标，来自 ``car1/pinch`` TF。"""
+        return self._node.tf_position("car1/pinch")
+
     def solve_ik(self, pos_world, target_quat=None) -> tuple[np.ndarray, float]:
-        # 统一使用固定抓取姿态，姿态参数本阶段不生效（真机接 servoj 时再启用）
+        # 统一使用固定抓取姿态，姿态参数本阶段不生效
+        del target_quat
         return self._node.solve_ik_world(np.asarray(pos_world, dtype=float))
 
 
-class RosGripper:
+class RosGripper(GripperInterface):
     """二指夹爪端口：开合插值在任务侧完成，指令流式下发。"""
 
     def __init__(self, node, clock: RosClock) -> None:
@@ -223,7 +262,7 @@ class RosGripper:
         return 0.0 if state is None else float(state.effort)
 
 
-class RosPerception:
+class RosPerception(PerceptionInterface):
     """目标感知端口：触发一帧采集，等待感知节点给出新的估计。"""
 
     def __init__(self, node) -> None:
@@ -232,8 +271,5 @@ class RosPerception:
     def estimate_target(self) -> np.ndarray:
         return self._node.request_estimate()
 
-    def object_truth(self) -> np.ndarray:
-        truth = self._node.target_truth()
-        if truth is None:
-            return np.full(3, np.nan)
-        return truth.copy()
+    def object_pose(self) -> tuple[np.ndarray, np.ndarray]:
+        return self._node.object_pose()

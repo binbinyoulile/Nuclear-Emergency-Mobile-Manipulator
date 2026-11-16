@@ -26,6 +26,30 @@ import mujoco
 import numpy as np
 from scipy.spatial.transform import Rotation
 
+# 与任务层共用的几何、姿态与动作时长统一由 mission_core 持有：车体尺寸一旦两边不一致，
+# 控制器对底盘的假设就和物理模型对不上（历史事故：轮距/轴距/轮径各改过一处）。
+from mission_core import (  # noqa: E402
+    APPROACH_TIME,
+    APPROACH_WORLD_Z,
+    CARRY_FIXED,
+    CARRY_TIME,
+    CHASSIS_SETTLE_TIME,
+    CLOSE_TIME,
+    DESCEND_TIME,
+    FINGER_CLOSE,
+    FINGER_OPEN,
+    GRASP_WORLD_Z,
+    GROUND_Z,
+    LIFT_TIME,
+    LIFT_WORLD_Z,
+    PINCH_ABOVE_FLOOR,
+    STEER_MAX,
+    STEER_WHEELBASE,
+    TARGET_QUAT,
+    WHEEL_RADIUS,
+    WHEEL_TRACK,
+)
+
 # ---------------------------------------------------------------------------
 # 路径
 # ---------------------------------------------------------------------------
@@ -66,9 +90,7 @@ def load_mjcf(scene_path: str) -> mujoco.MjModel:
 # 任务几何与控制参数
 # ---------------------------------------------------------------------------
 HOME_QPOS = np.array([-1.5708, -1.5708, 1.5708, -1.5708, -1.5708, 0.0])
-TARGET_QUAT = np.array([0.0, 1.0, 0.0, 0.0])  # 工具坐标系 +Y 轴朝下
 
-GROUND_Z = 0.0
 OBJECT_RADIUS = 0.003
 OBJ_POS = np.array([6.00, 0.00, GROUND_Z + OBJECT_RADIUS])
 BUCKET_POS = np.array([6.00, 4.00, 0.00])
@@ -76,44 +98,21 @@ OBJECT_STOP = np.array([5.00, 0.00])       # 位于圆柱后方 1.00 m
 BUCKET_STOP = np.array([5.00, 4.00])       # 位于屏蔽桶后方 1.00 m
 BUCKET_DROP_WORLD = np.array([6.00, 4.00, 0.28])
 
-# 夹爪几何实测（以 pinch 站点为原点，竖直方向）：闭合时夹持面覆盖 pinch 下方 17.7 mm 到
-# 上方 20.0 mm，张开时下沿只在 pinch 下方 4.5 mm。由此推出"自上而下夹一根平躺圆棒"的
-# 可行带：pinch 必须落在离地 17.7~20.7 mm 之间——低了指尖会压进地面（闭合被地面顶住），
-# 高了夹持面盖不到棒身最宽处。取中间值，闭合后指尖离地约 0.8 mm。
-PINCH_ABOVE_FLOOR = 0.0185
-GRASP_WORLD_Z = GROUND_Z + PINCH_ABOVE_FLOOR
-APPROACH_WORLD_Z = GRASP_WORLD_Z + 0.17
-LIFT_WORLD_Z = GRASP_WORLD_Z + 0.30
+# 单臂演示自己的投放高度与时长；双车任务用的是 mission_core 的桶口高度计算。
 PRE_DROP_WORLD_Z = 0.42
 DROP_WORLD_Z = 0.28
-
-CARRY_FIXED = np.array([0.20, 0.0, 0.45])   # 机械臂坐标系中的搬运姿态，位于底盘轮廓内
-FINGER_OPEN = 0.0
-FINGER_CLOSE = 255.0
-
-# 时间参数，单位 s
-APPROACH_TIME = 2.0
-DESCEND_TIME = 1.5
-CLOSE_TIME = 1.5
-LIFT_TIME = 1.8
-CARRY_TIME = 2.8
 PRE_DROP_TIME = 2.0
 DROP_TIME = 1.5
 RELEASE_TIME = 1.0
 RELEASE_SETTLE_TIME = 0.8
 RETRACT_TIME = 2.0
 FINAL_SETTLE_TIME = 2.0
-CHASSIS_SETTLE_TIME = 1.2
 
 # 底盘 P 控制器（几何与 dual_mobile_ur10e.xml 一致：轮距 0.555 m、轴距 0.50 m）
-WHEEL_RADIUS = 0.1525
-WHEEL_TRACK = 0.555
 K_POS = 1.20
 V_MAX = 0.80
 W_MAX = 1.00
 POS_TOL = 0.03
-STEER_WHEELBASE = 0.50
-STEER_MAX = 0.70
 COMMAND_RAMP = 0.12
 YAW_TOL = 0.03
 MAX_DRIVE_TIME = 40.0

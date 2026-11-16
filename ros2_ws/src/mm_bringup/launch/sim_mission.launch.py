@@ -3,6 +3,7 @@
 用法::
 
     ros2 launch mm_bringup sim_mission.launch.py seed:=6
+    ros2 launch mm_bringup sim_mission.launch.py seed:=6 mode:=smoke
     ros2 launch mm_bringup sim_mission.launch.py use_rviz:=true
 
 说明
@@ -10,14 +11,19 @@
 ``repo_root`` 由本文件位置反推（``ros2_ws/src/mm_bringup/launch`` 上溯四级），
 所以必须在源码树里用 ``colcon build --symlink-install`` 构建；
 脱离源码树安装时请改为显式传参 ``repo_root:=<仓库根>``。
+
+任务节点退出时必须连带关掉整组（``on_exit=Shutdown``）：否则仿真桥会留在那里
+继续发 ``/clock``，下一次启动就会同时有两条时钟流（TF_OLD_DATA 刷屏、
+两车里程计互相覆盖）。
 """
 
 import os
 from pathlib import Path
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, EmitEvent
 from launch.conditions import IfCondition
+from launch.events import Shutdown
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
@@ -32,6 +38,7 @@ def _repo_root() -> str:
 def generate_launch_description() -> LaunchDescription:
     repo_root = _repo_root()
     seed = LaunchConfiguration("seed")
+    mode = LaunchConfiguration("mode")
     command_timeout = LaunchConfiguration("command_timeout")
     use_rviz = LaunchConfiguration("use_rviz")
 
@@ -39,6 +46,11 @@ def generate_launch_description() -> LaunchDescription:
         [
             DeclareLaunchArgument(
                 "seed", default_value="-1", description="随机种子；-1 表示每次随机"
+            ),
+            DeclareLaunchArgument(
+                "mode",
+                default_value="mission",
+                description="mission = 七阶段正式任务；smoke = 阶段 1 端到端冒烟",
             ),
             DeclareLaunchArgument(
                 "command_timeout",
@@ -75,10 +87,13 @@ def generate_launch_description() -> LaunchDescription:
                 executable="mission_node",
                 name="mm_mission",
                 output="screen",
+                on_exit=[EmitEvent(event=Shutdown())],
+                additional_env={"MM_REPO_ROOT": repo_root},
                 parameters=[
                     {
                         "use_sim_time": True,
                         "seed": ParameterValue(seed, value_type=int),
+                        "mode": ParameterValue(mode, value_type=str),
                         "frame_dt": 0.02,
                     }
                 ],

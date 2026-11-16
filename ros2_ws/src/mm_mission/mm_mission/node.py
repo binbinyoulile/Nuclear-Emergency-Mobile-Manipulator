@@ -7,7 +7,8 @@
   因此"读状态 → 算指令 → 写指令"的写法与单进程版本完全一致；
 - 回调在另一个执行器线程里跑，只负责把消息解析进缓存。
 
-阶段 1 的 ``run_mission`` 调用 ``smoke.run``（端到端冒烟）；阶段 2 换成正式七阶段状态机。
+任务本体在仓库根的 ``mission_core.py``（与单进程入口共用的唯一一份实现），
+``mode:=mission``（默认）跑七阶段状态机，``mode:=smoke`` 跑阶段 1 的端到端冒烟。
 """
 
 from __future__ import annotations
@@ -32,7 +33,7 @@ from rclpy.qos import (
 )
 from rosgraph_msgs.msg import Clock
 from sensor_msgs.msg import JointState
-from std_msgs.msg import Float64MultiArray, Int32, String
+from std_msgs.msg import Bool, Float64MultiArray, Int32, String
 from std_srvs.srv import Trigger
 from tf2_ros import Buffer, TransformListener
 
@@ -83,6 +84,7 @@ class MissionNode(Node):
         self.declare_parameter("ready_timeout", 30.0)
         self.declare_parameter("estimate_timeout", 5.0)
         self.declare_parameter("seed", -1)
+        self.declare_parameter("mode", "mission")
 
         self._cond = threading.Condition()
         self._clock_seq = 0
@@ -97,7 +99,14 @@ class MissionNode(Node):
         self._estimate: np.ndarray | None = None
         self._estimate_seq = 0
         self._truth: np.ndarray | None = None
+        self._object: tuple[np.ndarray, np.ndarray] | None = None
         self._contacts = 0
+        # 两车最近一次轮速指令：桥的帧同步要求每帧各一条，控制器不刷新底盘时要补发。
+        self._wheel_cache = [
+            WheelCommand(left=0.0, right=0.0, steer=0.0) for _ in CAR_NAMES
+        ]
+        # 任务指标（mission_core 的 metrics 字典，逐阶段原地填充）
+        self._core_metrics: dict = {}
 
         self.io = RobotIO(
             clock=RosClock(self),
@@ -154,6 +163,9 @@ class MissionNode(Node):
         self.create_subscription(
             PoseStamped, "/sim/target_truth", self._on_truth, qos_latest(10)
         )
+        self.create_subscription(
+            PoseStamped, "/sim/object_pose", self._on_object_pose, qos_latest(10)
+        )
         self.create_subscription(Int32, "/sim/contacts", self._on_contacts, qos)
 
         self._wheel_pubs = [
@@ -165,6 +177,9 @@ class MissionNode(Node):
         )
         self._gripper_pub = self.create_publisher(
             GripperCommand, "/car1/gripper/command", qos
+        )
+        self._peer_avoid_pub = self.create_publisher(
+            Bool, "/car1/lidar/ignore_peer", latched
         )
         self._status_pub = self.create_publisher(MissionStatus, "/mission/status", latched)
         self._result_pub = self.create_publisher(String, "/mission/result", latched)
@@ -230,6 +245,16 @@ class MissionNode(Node):
         with self._cond:
             self._truth = np.array([p.x, p.y, p.z], dtype=float)
 
+    def _on_object_pose(self, msg: PoseStamped) -> None:
+        """被操作对象的实时世界位姿（位置 + wxyz 四元数），供投放对中和验收用。"""
+        p = msg.pose.position
+        q = msg.pose.orientation
+        with self._cond:
+            self._object = (
+                np.array([p.x, p.y, p.z], dtype=float),
+                np.array([q.w, q.x, q.y, q.z], dtype=float),
+            )
+
     def _on_contacts(self, msg: Int32) -> None:
         with self._cond:
             self._contacts = int(msg.data)
@@ -261,7 +286,7 @@ class MissionNode(Node):
         return sim_time
 
     def wait_ready(self, timeout: float | None = None) -> None:
-        """等到第一帧状态齐全（里程计、关节、夹爪）。"""
+        """等到第一帧状态齐全（里程计、关节、夹爪、对象位姿）。"""
         limit = float(
             timeout if timeout is not None else self.get_parameter("ready_timeout").value
         )
@@ -270,12 +295,13 @@ class MissionNode(Node):
                 lambda: self._clock_seq > 0
                 and all(item is not None for item in self._odom)
                 and self._arm_joint is not None
-                and self._gripper is not None,
+                and self._gripper is not None
+                and self._object is not None,
                 timeout=limit,
             )
         if not ready:
             raise TimeoutError(
-                "状态话题未就绪：检查 mm_sim_bridge 是否已启动并发布 /clock"
+                "状态话题未就绪：检查 mm_sim_bridge 是否已启动并发布 /clock、/sim/object_pose"
             )
 
     # ------------------------------------------------------------------
@@ -314,12 +340,30 @@ class MissionNode(Node):
         with self._cond:
             return None if self._truth is None else self._truth.copy()
 
+    def object_pose(self) -> tuple[np.ndarray, np.ndarray]:
+        """被操作对象的实时位姿 (位置, 四元数 wxyz)。"""
+        with self._cond:
+            item = self._object
+        if item is None:
+            raise RuntimeError("尚未收到 /sim/object_pose")
+        return item[0].copy(), item[1].copy()
+
     # ------------------------------------------------------------------
     # 写指令
     # ------------------------------------------------------------------
     def publish_wheel(self, index: int, left: float, right: float, steer: float) -> None:
         msg = WheelCommand(left=float(left), right=float(right), steer=float(steer))
+        self._wheel_cache[index] = msg
         self._wheel_pubs[index].publish(msg)
+
+    def flush_wheel_commands(self) -> None:
+        """把两车最近一次轮速指令重发一遍。
+
+        桥的帧同步要求每帧各收到一条 ``wheel_command``；机械臂动作、视觉等待等阶段
+        任务层不刷新底盘指令（仿真里 ctrl 会保持，话题里不会），这里补齐"保持"语义。
+        """
+        for index, msg in enumerate(self._wheel_cache):
+            self._wheel_pubs[index].publish(msg)
 
     def publish_arm(self, q) -> None:
         self._arm_pub.publish(Float64MultiArray(data=[float(v) for v in q]))
@@ -328,6 +372,10 @@ class MissionNode(Node):
         self._gripper_pub.publish(
             GripperCommand(position=float(position), max_effort=float(max_effort))
         )
+
+    def publish_peer_avoidance(self, enabled: bool) -> None:
+        """告诉仿真桥要不要把同伴车算进 car1 的动态障碍。"""
+        self._peer_avoid_pub.publish(Bool(data=bool(enabled)))
 
     def set_stage(self, stage: str) -> None:
         self._stage = stage
@@ -342,7 +390,7 @@ class MissionNode(Node):
         )
 
     # ------------------------------------------------------------------
-    # 服务调用
+    # 服务与 TF
     # ------------------------------------------------------------------
     def _call_service(self, client, request, timeout: float):
         """异步调用 + 轮询 future，超时或失败返回 None。
@@ -375,7 +423,11 @@ class MissionNode(Node):
         )
 
     def request_estimate(self) -> np.ndarray:
-        """触发一帧采集，并等待感知节点给出新的有效估计。"""
+        """触发一帧采集，并等待感知节点给出新的有效估计。
+
+        等待期间继续推进仿真帧（图像和 TF 都在帧边界产生），同时补发两车轮速指令；
+        这样任务线程阻塞在感知上时，仿真时间仍然由任务层驱动，不会凭墙钟自由跑。
+        """
         with self._cond:
             seq = self._estimate_seq
         response = self._call_service(
@@ -384,14 +436,26 @@ class MissionNode(Node):
         if response is None or not response.success:
             raise RuntimeError("相机触发失败：/car1/camera/capture 无响应")
         limit = float(self.get_parameter("estimate_timeout").value)
-        with self._cond:
-            ok = self._cond.wait_for(
-                lambda: self._estimate_seq > seq, timeout=limit
+        deadline = time.monotonic() + limit
+        while True:
+            with self._cond:
+                if self._estimate_seq > seq and self._estimate is not None:
+                    return self._estimate.copy()
+            if time.monotonic() > deadline:
+                raise TimeoutError("等待 /perception/target 超时")
+            self.wait_next_frame()
+            self.flush_wheel_commands()
+
+    def tf_position(self, frame: str) -> np.ndarray:
+        """查询某个 TF 坐标系在 map 下的位置。"""
+        try:
+            tf = self._tf_buffer.lookup_transform(
+                "map", frame, rclpy.time.Time()
             )
-            estimate = None if self._estimate is None else self._estimate.copy()
-        if not ok or estimate is None:
-            raise TimeoutError("等待 /perception/target 超时")
-        return estimate
+        except Exception as exc:
+            raise RuntimeError(f"TF map→{frame} 查询失败: {exc}") from exc
+        t = tf.transform.translation
+        return np.array([t.x, t.y, t.z], dtype=float)
 
     def arm_base_to_world(self, point: np.ndarray) -> np.ndarray:
         """car1/arm_base_link 坐标 → 世界坐标。"""
@@ -411,28 +475,51 @@ class MissionNode(Node):
     # ------------------------------------------------------------------
     # 任务
     # ------------------------------------------------------------------
+    def _run_core_mission(self) -> bool:
+        """用仓库根的 mission_core 跑七阶段状态机。"""
+        import mission_core
+
+        truth = self.target_truth()
+        if truth is None:
+            raise RuntimeError("未收到 /sim/target_truth，无法做视觉误差验收")
+        mission = mission_core.DualCarMission(self.io, truth)
+        # 与 mission 共享同一个 dict：即使中途抛异常，也能把已完成阶段的指标带出来
+        self._core_metrics = mission.metrics
+        return bool(mission.run())
+
     def run_mission(self) -> bool:
         """执行任务并输出单行 RESULT_JSON（与单进程版本的指标链路一致）。"""
         started = time.perf_counter()
+        mode = str(self.get_parameter("mode").value)
         seed = int(self.get_parameter("seed").value)
-        metrics: dict = {"stage": "init", "seed": seed, "backend": "ros"}
         ok = False
         try:
             self.wait_ready()
-            from . import smoke
+            if mode == "smoke":
+                from . import smoke
 
-            metrics.update(smoke.run(self.io, self))
-            self.set_stage("done")
-            ok = True
+                self._core_metrics = smoke.run(self.io, self)
+                ok = True
+            else:
+                ok = self._run_core_mission()
+            self.set_stage("done" if ok else "failed")
         except Exception as exc:  # 任务失败要把原因写进指标，而不是直接崩掉
-            metrics["error"] = f"{type(exc).__name__}: {exc}"
-            self.get_logger().error(metrics["error"])
+            message = f"{type(exc).__name__}: {exc}"
+            self._core_metrics["error"] = message
+            self.get_logger().error(message)
             self.set_stage("failed")
         finally:
-            metrics["stage"] = self._stage
-            metrics["sim_time_s"] = round(self.sim_time, 3)
-            metrics["wall_time_s"] = round(time.perf_counter() - started, 3)
-            metrics["ok"] = ok
+            metrics = dict(self._core_metrics)
+            metrics.update(
+                seed=seed,
+                backend="ros",
+                mode=mode,
+                sim_time_s=round(self.sim_time, 3),
+                wall_time_s=round(time.perf_counter() - started, 3),
+                ok=bool(ok),
+            )
+            metrics.setdefault("stage", self._stage)
+            metrics.setdefault("error", None)
             line = "RESULT_JSON: " + json.dumps(metrics, ensure_ascii=False, default=float)
             print(line, flush=True)
             self._result_pub.publish(String(data=line))

@@ -35,6 +35,9 @@
 - **D435i 视觉**：离屏渲染深度图，先最小二乘拟合地面平面，再取"离地 0.8~30 mm"的点云做连通域与 PCA 轴线拟合，最后按两端上表面高差判定粗端并反投影出世界坐标；不依赖颜色、不读真值。
 - **机器人操作**：UR10e + Robotiq 2F-85，使用 mink IK 抓住不锈钢监测棒的粗端，抬起搬运后把质心对准屏蔽桶中心、在桶口上方松爪，靠自由落体落进桶底。
 - **任务闭环**：起点出发、长距离避障、并行调度、抓取投放、倒车脱离辐射区、正向精准返航。
+- **单一任务实现**：七阶段状态机、三个路径控制器与抓取/投放编排只在 `mission_core.py` 里写一份，
+  单进程仿真与 ROS 2 任务节点共用；`mission_core` 不 import `mujoco`，硬件访问全部经由
+  `robot_interface.py` 的端口（Clock / Lidar / Chassis / Arm / Gripper / Perception）。
 - **迁移友好**：视觉的数据获取与坐标变换层、底盘和机械臂控制层均有明确接口，便于替换为 ROS2 话题和 TF2。
 
 ## 底盘模型
@@ -130,17 +133,19 @@ python scripts\fetch_models.py
 
 ```text
 mobile_manipulator/
-├── dual_car_pick_place.py   # 双车任务状态机、雷达避障、视觉与协同投放
-├── mobile_pick_place.py     # 共享底盘、IK、夹爪与仿真运动底层
-├── robot_interface.py       # 硬件端口抽象：Clock / Chassis / Arm / Gripper / Perception
+├── mission_core.py          # 任务层：七阶段状态机 + 三个路径控制器 + 抓取/投放编排（零 MuJoCo）
+├── dual_car_pick_place.py   # 单进程入口：Sim* 适配器、场景初始化、深度视觉、截图与指标
+├── mobile_pick_place.py     # MuJoCo 底层：MJCF 加载、mink IK、重力补偿、仿真步进
+├── robot_interface.py       # 硬件端口抽象：Clock / Lidar / Chassis / Arm / Gripper / Perception
 ├── dual_car_scene.xml       # 双车主场景
 ├── arm_ik_scene.xml         # 机械臂 IK 辅助场景
 ├── models/                  # 自建 MJCF 与监测棒网格；Menagerie 二进制 mesh 由脚本下载
 ├── scripts/fetch_models.py  # Menagerie 资产下载脚本
 ├── scripts/run_matrix.py    # 多 seed 回归矩阵（CSV + 每 seed 日志）
 ├── scripts/compare_metrics.py  # 两份回归 CSV 逐指标对比
+├── scripts/check_ports.py   # 两个后端是否都实现了全部端口（漏方法在构造时即报错）
 ├── reports/                 # regression.csv（入库）、baselines/ 历史基线、logs/（本地忽略）
-├── ros2_ws/src/             # 阶段 1 ROS 2 骨架：mm_msgs / mm_sim / mm_mission / mm_perception / mm_bringup
+├── ros2_ws/src/             # ROS 2 五包：mm_msgs / mm_sim / mm_mission / mm_perception / mm_bringup
 ├── docs/screenshots/        # 5 张核心展示截图
 ├── docs/ros2_stage1_design.md  # 阶段 1 节点/话题/消息设计
 ├── requirements.txt
@@ -165,7 +170,7 @@ mobile_manipulator/
 6. 终态检查：物体在桶内、两车回到起点、车车物理接触数为 0。
 
 目标区按 UR10e 工作空间收紧为 `0.70 × 0.60 m`（X `±0.35`，Y `20.70 ~ 21.30`），
-`dual_car_pick_place.py` 的 `TARGET_ZONE_*` 常量与 `dual_car_scene.xml` 的四个绿色边框
+`mission_core.py` 的 `TARGET_ZONE_*` 常量与 `dual_car_scene.xml` 的四个绿色边框
 geom 一一对应，改一处必须同步另一处。
 
 监测棒长 202 mm、body 原点在粗端截面中心、生成时沿世界 `+X` 平放，所以采样不是在框内
@@ -274,8 +279,10 @@ D:\Python313\python.exe .\scripts\run_matrix.py --seeds 0-20
 - 雷达检测距离 2.8 m 小于 3.5 m 制动距离，限速与避障阈值还没有做联合标定。
 - 摩擦、静摩擦门限、接触参数仍是仿真整定值，未经真实轮胎辨识。
 - 视觉是渲染深度图 + 地平面拟合，真机需要标定（内外参、深度尺度）与去噪流程替换。
-- ROS 2 侧目前只有冒烟序列：七阶段状态机、三个路径控制器与 ROS 回归矩阵属于阶段 2；
-  `mm_mission` 的接口已经按最终形态收敛好，搬过去不需要改 `mm_sim` / `mm_msgs`。
+- ROS 2 侧的两轨验证口径是"轨道 A（单进程）1e-9 逐位一致做护栏，轨道 B（分布式 ROS）
+  按物理判据带验收"。桥的指令延迟恒定一帧 20 ms、DDS 时序不可复现，所以两轨不要求逐位相同。
+- ROS 侧的姿态参数尚未接通：逆解服务固定用竖直下压姿态，抓取/投放的实际工具朝向由
+  单进程侧的 `TARGET_QUAT` 决定。
 
 ## 跨平台路径
 

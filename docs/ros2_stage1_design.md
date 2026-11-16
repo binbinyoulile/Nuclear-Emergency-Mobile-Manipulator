@@ -1,6 +1,6 @@
 # 阶段 1 设计草案：ROS 2 分布式骨架
 
-> 状态：**草案，待确认**。确认后按第 11 节的顺序实施。
+> 状态：**已实施**（阶段 1 骨架与阶段 2 任务层接入均已落地；阶段 2 的增补项见 5.5）。
 > 本文只讲"节点怎么切、接口长什么样、为什么这么切"，不讲实现细节。
 > 阶段 0 的接口层（`robot_interface.py`）是本阶段直接复用的地基。
 
@@ -138,6 +138,8 @@
 | `/car1/camera/color/camera_info` | `sensor_msgs/CameraInfo` | sim → localizer | 启动 1 次 | reliable, transient_local |
 | `/perception/target` | `mm_msgs/TargetEstimate` | localizer → mission | ≤10 Hz | reliable, depth 1 |
 | `/sim/target_truth` | `geometry_msgs/PoseStamped` | sim → mission | 10 Hz | reliable, depth 1 |
+| `/sim/object_pose` | `geometry_msgs/PoseStamped` | sim → mission | 50 Hz | reliable, depth 1 |
+| `/car1/lidar/ignore_peer` | `std_msgs/Bool` | mission → sim | 按需 | reliable, transient_local |
 | `/sim/contacts` | `std_msgs/Int32` | sim → mission | 50 Hz | reliable, depth 1 |
 | `/mission/status` | `mm_msgs/MissionStatus` | mission → rviz/log | 1 Hz | reliable, depth 1 |
 | `/mission/result` | `std_msgs/String`（单行 JSON） | mission → 回归脚本 | 结束 1 次 | reliable, transient_local |
@@ -208,9 +210,24 @@ Snapshot.srv         string name
 | `car{1,2}/base_link` | 底盘中心 | sim_bridge（50 Hz，由位姿直接生成） |
 | `car1/camera_link` | D435i 光心 | sim_bridge（50 Hz） |
 | `car1/arm_base_link` | 机械臂基座（任务层用它把基座系目标换算到世界系） | sim_bridge（50 Hz，父系 `car1/base_link`） |
+| `car1/pinch` | 夹持点（pinch 站点），投放对中要量"夹持点 → 质心" | sim_bridge（50 Hz，父系 `car1/arm_base_link`） |
 
 相机是**眼在手上**（装在 UR10e 末端 `wrist_3_link` 上），仿真里直接取世界位姿发布，不在阶段 1 拼六轴链；
 真机阶段由 `ur_robot_driver` + `robot_state_publisher` 给出完整链。
+
+### 5.5 阶段 2 增补（任务层拆分带出来的三个契约）
+
+任务层搬到仓库根的 `mission_core.py` 之后，有四样东西单进程里是"直接读全局量"、分布式的必须走契约：
+
+| 需要的信息 | 单进程来源 | ROS 契约 |
+|---|---|---|
+| 手中物体的**实时**位姿（投放对中、抓取成败、验收） | `DATA.qpos[OBJ_QADR:]` | `/sim/object_pose` |
+| 夹持点世界坐标（量"夹持点 → 质心"偏移） | `DATA.site_xpos[pinch]` | `car1/pinch` TF |
+| 雷达"是否把同伴车当动态障碍"（末段直线入位要临时关掉） | `lidar.dynamic_roots` | `/car1/lidar/ignore_peer` 的 `Bool` |
+| 每帧渲染回调（雷达点云叠加） | `sim.viewer` | `RobotIO.frame_hook`，ROS 侧为 `None` |
+
+`/sim/target_truth` 与 `/sim/object_pose` **不能混用**：前者是生成时的落点（姿态恒为单位四元数），
+只用于视觉误差验收；后者才是那根正在被搬运的杆。历史上把两者当同一个用过，结果抓取判据永远为假。
 
 ---
 
@@ -227,7 +244,11 @@ Snapshot.srv         string name
 要点：
 
 - 第 4 步的等待是**只等底盘指令**。机械臂、夹爪按各自 50 Hz 流式更新，最多滞后一帧（臂运动慢，无感）；
-  视觉触发是带外请求，不参与帧同步（取图期间两车都是停住的）。
+  视觉触发是带外请求，不参与帧同步。
+- 阶段 2 补了两条：①机械臂动作、视觉等待等阶段任务层不刷新底盘指令，`RosClock.step()`
+  每帧把两车最近一次的轮速指令补发一遍（仿真里 ctrl 会保持，话题里不会），否则桥每帧都超时；
+  ②视觉等待期间（`request_estimate()`）也在推进帧并补发指令——图像与 TF 都在帧边界产生，
+  只有推进才会出新帧，这样仿真时间始终由任务层驱动而不是凭墙钟自由跑。
 - 超时会在日志里累加计数，出现非零即说明任务层某处卡了，是排查线索而不是故障。
 - 帧同步让仿真"跑得比墙钟快"是安全的（不会出现状态堆积），所以回归不必等实时。
 
@@ -290,19 +311,24 @@ mm_msgs  ◄── mm_sim ──► mm_mission ◄── mm_perception（仅 msg
 | `arm.solve_ik(...)` | 调 `/car1/arm/solve_ik` |
 | `gripper.start/tick/hold()` | 插值在任务侧计算，发 `/car1/gripper/command` |
 | `gripper.force()` | 读 `/car1/gripper/state` |
-| `perception.capture()` + `detect_target()` | 触发 `/car1/camera/capture`，等一帧新的 `/perception/target` |
-| `perception.object_truth()` | 订阅 `/sim/target_truth`（真机返回 NaN） |
+| `perception.estimate_target()` | 触发 `/car1/camera/capture`，等一帧新的 `/perception/target` |
+| `perception.object_pose()` | 订阅 `/sim/object_pose`（真机由腕部相机给出） |
+| `arm.tool_position()` | 查 `car1/pinch` TF |
+| `lidar.peer_avoidance` | 发 `/car1/lidar/ignore_peer` |
 | `capture_snapshot()` | 调 `/sim/snapshot` |
-| 控制器内部的 `base.DATA.time`（约 20 处） | 改成注入的 `io.clock.now`（**阶段 1 必须还的技术债**） |
+| 控制器内部的 `base.DATA.time`（约 20 处） | 改成注入的 `io.clock.now`（阶段 2 已还清） |
 
 **保持不变**：`DualCarMission.run()` 的七阶段流程、`PathFollower` / `SkidTurnFollower` /
 `ReverseStraightFollower` 的控制律、8 个 `run_*_concurrent` 的交错方式、`metrics` 的全部字段与判据。
 
-需要小幅改动的接口（3 处，均为收敛而不是扩张）：
+需要小幅改动的接口（均为收敛而不是扩张，阶段 2 已全部落地）：
 
-1. `Clock` 注入给三个 follower（还上面的时钟债）；
-2. `PerceptionInterface` 由 `capture()+detect_target()` 收敛为 `estimate_target()`（感知拆出去后，任务层不该关心像素）；
-3. `ArmMotion` 的插值抽成纯数学类（任务侧用它算关节目标，仿真侧只负责写 ctrl），一份实现两处复用。
+1. `Clock` 注入给三个 follower（还上面的时钟债）；`PathFollower` 的 `frame_dt` 也取自时钟；
+2. `PerceptionInterface` 由 `capture()+detect_target()+object_truth()` 收敛为
+   `estimate_target()+object_pose()`（感知拆出去后，任务层不该关心像素，也不该有"真值"这个概念）；
+3. `RobotIO.viewer` 换成每帧渲染回调 `frame_hook`（任务层不认识 viewer 这个 MuJoCo 对象）；
+4. `LidarInterface` 独立成端口（底盘持有它），`ChassisInterface` 补 `set_motion` 默认实现、
+   `left/right/steer_cmd` 输出缓存与 `min_other_separation`。
 
 ---
 
@@ -352,17 +378,19 @@ mm_msgs  ◄── mm_sim ──► mm_mission ◄── mm_perception（仅 msg
 
 ## 11. 实施顺序（每步都有独立验收）
 
-| 步 | 内容 | 产出 / 验收 |
-|---|---|---|
-| 0 | VM 装 ROS 2 Humble，验证 `ros2 doctor`、`colcon build`、`RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`；仓库克隆到 ASCII 路径 | `ros2 run demo_nodes_cpp talker/listener` 通 |
-| 1 | `mm_msgs` 全量定义 | `colcon build` + `ros2 interface show` 逐条核对；不含任何运行时逻辑 |
-| 2 | `mm_sim` + `sim_bridge`：物理、传感器、TF、`/clock`、指令接收 | **不改任务层**，单跑 sim_bridge，`ros2 topic hz` 全部达标，rviz 里能看到两车与 TF |
-| 3 | 还时钟债 + `mm_mission` 的 `Ros*` 适配器 + mission 节点 | 轨道 A 仍逐位一致（证明搬动无误）；seed 6 端到端跑通 |
-| 4 | 感知拆分：`mm_perception` 替换任务层内的检测 | 视觉误差复测 ≤ 30 mm；21 个种子（轨道 B） |
-| 5 | `run_ros_matrix.py` + bag 录制 + 指标带对比 | `reports/ros_regression.csv`，21/21 |
-| 6 | 文档与版本：ARCHITECTURE 增 ROS 章节、README 增运行命令、打 `v1.1.0` | 仓库自洽，新人按 README 能跑起来 |
+| 步 | 内容 | 产出 / 验收 | 状态 |
+|---|---|---|---|
+| 0 | VM 装 ROS 2 Humble，验证 `ros2 doctor`、`colcon build`、`RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`；仓库克隆到 ASCII 路径 | `ros2 run demo_nodes_cpp talker/listener` 通 | ✅ |
+| 1 | `mm_msgs` 全量定义 | `colcon build` + `ros2 interface show` 逐条核对；不含任何运行时逻辑 | ✅ |
+| 2 | `mm_sim` + `sim_bridge`：物理、传感器、TF、`/clock`、指令接收 | **不改任务层**，单跑 sim_bridge，`ros2 topic hz` 全部达标，rviz 里能看到两车与 TF | ✅ |
+| 3 | 还时钟债 + `mm_mission` 的 `Ros*` 适配器 + mission 节点 | 轨道 A 仍逐位一致（证明搬动无误）；seed 6 端到端跑通 | ✅ 阶段 1 完成（冒烟）|
+| 4 | 感知拆分：`mm_perception` 替换任务层内的检测 | 视觉误差复测 ≤ 30 mm | ✅ 同帧逐位一致（0.000 mm）|
+| 5 | 任务层拆分：`mission_core.py` + 端口扩展 + 桥补 `/sim/object_pose` / `car1/pinch` | 轨道 A 21/21 且与基线逐位一致；轨道 B 21 种子（Ubuntu） | 轨道 A ✅ / 轨道 B 待跑 |
+| 6 | `run_ros_matrix.py` + bag 录制 + 指标带对比 | `reports/ros_regression.csv`，21/21 | 待做 |
+| 7 | 文档与版本：ARCHITECTURE 增 ROS 章节、README 增运行命令、打 `v1.1.0` | 仓库自洽，新人按 README 能跑起来 | 待做 |
 
-步 3 是分水岭：过了这一步，"任务层脱离仿真"就已经被证明；步 4 是锦上添花的架构完整度。
+步 3 是分水岭：过了这一步，"任务层脱离仿真"就已经被证明；步 5 把**同一份**任务代码
+搬到 `mission_core.py` 后，两个后端不再各有一份状态机。
 
 ---
 

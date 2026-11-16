@@ -14,8 +14,8 @@
 
 **当前边界（`master`；冻结基线是 tag `v1.0.0`，之后被操作对象换成不锈钢监测棒、屏蔽桶换成 Ø240 圆筒）**：
 
-- 已实现：双车协同全流程仿真（雷达避障 → 视觉识别 → 侧面抓取 → 动态停靠 → 协同投放 → 倒车脱离 → 精准返航），75 kg 真实参数重载底盘，21 个随机种子的可回归验收；阶段 1 的三节点 ROS 2 骨架（`ros2_ws`）已在 Ubuntu 22.04 + 原生 Humble 上 `colcon build` 通过，冒烟两轮全过。
-- 未实现：真机驱动、手眼标定、实车参数辨识；ROS 侧的七阶段任务状态机（阶段 2）。
+- 已实现：双车协同全流程仿真（雷达避障 → 视觉识别 → 侧面抓取 → 动态停靠 → 协同投放 → 倒车脱离 → 精准返航），75 kg 真实参数重载底盘，21 个随机种子的可回归验收；阶段 1 的三节点 ROS 2 骨架（`ros2_ws`）已在 Ubuntu 22.04 + 原生 Humble 上 `colcon build` 通过；阶段 2 把任务层拆到零 MuJoCo 的 `mission_core.py`，单进程与 ROS 2 共用同一份实现，端口扩到 `Lidar / object_pose / tool_position`。
+- 未实现：真机驱动、手眼标定、实车参数辨识；ROS 侧的多 seed 回归（轨道 B）。
 
 ## 3. 跨端协作环境
 
@@ -36,33 +36,41 @@
 
 ```
 mobile_manipulator/
-├─ dual_car_pick_place.py   # 仿真侧：控制器、感知、任务状态机、Sim* 适配器、指标
-├─ mobile_pick_place.py     # 共享底层：MJCF 加载、mink IK、重力补偿、ArmMotion/FingerMotion、Simulation
-├─ robot_interface.py       # 抽象层：Clock / Chassis / Arm / Gripper / Perception / RobotIO（不含 MuJoCo）
+├─ mission_core.py          # 任务层：七阶段状态机、三个路径控制器、抓取/投放编排、任务常量（零 MuJoCo）
+├─ dual_car_pick_place.py   # 单进程入口：Sim* 适配器、场景初始化、深度视觉、雷达点云叠加、截图与指标
+├─ mobile_pick_place.py     # MuJoCo 底层：MJCF 加载、mink IK、重力补偿、ArmMotion/FingerMotion、Simulation
+├─ robot_interface.py       # 抽象层：Clock / Lidar / Chassis / Arm / Gripper / Perception / RobotIO（不含 MuJoCo）
 ├─ dual_car_scene.xml       # 主场景（30×30 m、红线、绿框、两车装配）
 ├─ arm_ik_scene.xml         # 固定基座 IK 场景
 ├─ models/                  # UR10e 复合模型 + 监测棒网格（chopstick.obj 入库，Menagerie 的 assets 由脚本下载）
-├─ scripts/                 # fetch_models.py / run_matrix.py / compare_metrics.py
-├─ ros2_ws/src/             # 阶段 1 ROS 2 骨架：mm_msgs / mm_sim / mm_mission / mm_perception / mm_bringup（Humble 构建通过）
+├─ scripts/                 # fetch_models.py / run_matrix.py / compare_metrics.py / check_ports.py
+├─ ros2_ws/src/             # ROS 2 五包：mm_msgs / mm_sim / mm_mission / mm_perception / mm_bringup（Humble 构建通过）
 ├─ docs/screenshots/        # README 配图
 └─ reports/                 # regression.csv + baselines/（入库）、logs/（本地忽略）
 ```
+
+**分层方向是单向的**：`mission_core` → `robot_interface`（只认端口）；两个后端
+（`dual_car_pick_place` / `ros2_ws/.../mm_mission`）→ `mission_core`。
+`mission_core` 不 import `mujoco`、不读任何仿真全局量，`scripts/check_ports.py` 会在
+提交前验证两个后端都实现了全部端口。
 
 ## 5. 核心模块职责
 
 | 模块 | 关键符号 | 职责 | 依赖 |
 |---|---|---|---|
-| 抽象层 | `robot_interface.RobotIO` | 定义硬件端口：时钟、两车底盘、机械臂、夹爪、感知 | 仅 numpy |
-| 仿真适配 | `SimClock / SimArm / SimGripper / SimPerception` | 把接口翻译成 MuJoCo 的 ctrl/qpos 读写；`build_robot_io()` 是唯一装配点 | mobile_pick_place |
-| 底盘 | `CarController`（实现 `ChassisInterface`） | 四轮轮速 + 前轮转角下发、世界位姿/速度回读、接触统计、雷达扫描、停稳 | base |
-| 路径控制 | `PathFollower` | 纯追踪 + 雷达局部避障 + 终点直行 + 低速掉头；横向容差与超时保护 | CarController |
-| 转向控制 | `SkidTurnFollower` | 差速原地转（方向锁存、越界即停、可选轮速斜坡） | CarController |
-| 倒车控制 | `ReverseStraightFollower` | 锁车道 + 前轮转角保持的直线倒车，后向净空限速 | CarController |
+| 抽象层 | `robot_interface.RobotIO` | 定义硬件端口：时钟、两车底盘（含雷达视图）、机械臂、夹爪、感知；`frame_hook` 是每帧渲染回调 | 仅 numpy |
+| 任务层 | `mission_core.DualCarMission` | 七阶段状态机、并发调度（`run_*_concurrent`）、指标采集与验收判据 | RobotIO |
+| 路径控制 | `mission_core.PathFollower` | 纯追踪 + 雷达局部避障 + 终点直行 + 低速掉头；横向容差与超时保护 | Chassis / Lidar / Clock |
+| 转向控制 | `mission_core.SkidTurnFollower` | 差速原地转（方向锁存、越界即停、可选轮速斜坡） | Chassis / Clock |
+| 倒车控制 | `mission_core.ReverseStraightFollower` | 锁车道 + 前轮转角保持的直线倒车，后向净空限速 | Chassis / Lidar / Clock |
+| 抓取/投放编排 | `mission_core.execute_grasp_concurrent / execute_cooperative_place` | 接近-下探-闭合-提升-收回；按实测杆轴把质心对到桶心后在桶口上方松爪 | Arm / Gripper / Perception |
+| 仿真适配 | `SimClock / SimArm / SimGripper / SimPerception` | 把端口翻译成 MuJoCo 的 ctrl/qpos 读写；`build_sim_robot_io()` 是唯一装配点 | mobile_pick_place |
+| 底盘 | `CarController`（实现 `ChassisInterface`） | 四轮轮速 + 前轮转角下发、世界位姿/速度回读、接触统计、雷达扫描 | base |
 | 感知 | `get_camera_data / depth_to_world / detect_steel_target / process_camera_frame` | D435i 深度视觉四层：取图 → 反投影点云 → 地平面拟合与离地分割 → PCA 定轴、凭两端高差判粗端 | mujoco.Renderer |
 | 机械臂 | `ArmMotion`（经 `SimArm` 暴露） | 关节目标下发 + 平滑插值 + 重力补偿；IK 用 mink 且以当前关节角为种子 | mink |
 | 夹爪 | `FingerMotion`（经 `SimGripper` 暴露） | 单执行器开合插值（0 开 / 255 闭） | base |
-| 任务 | `DualCarMission` | 七阶段状态机、并发调度（`run_*_concurrent`）、指标采集与验收判据 | RobotIO |
 | 入口 | `main()` / `initialize_mission()` | 参数解析（`--seed/--headless/--snapshot/--backend`）、场景与目标随机化、viewer | 全部 |
+| ROS 适配 | `mm_mission.adapters.Ros*` | 把端口翻译成话题/服务/TF；`RosClock.step()` 等 `/clock` 并补发两车轮速指令 | robot_interface |
 
 ## 6. 数据流
 
@@ -83,14 +91,23 @@ mobile_manipulator/
 ```
 任务状态机 ──读取、写指令──> RobotIO
                               ├── chassis[i].pose()/speed()/wheel_speeds()   ← 位姿与轮速回读
-                              ├── chassis[i].set_wheels(l, r, steer)          → ctrl 写入
-                              ├── chassis[i].lidar.scan()                    ← 点云
-                              ├── arm.start_fixed()/tick()/hold()            → 六个关节 ctrl
-                              ├── gripper.start()/tick()/hold()              → 夹爪 ctrl
-                              └── perception.capture()/detect_target()       ← RGB/深度
+                              ├── chassis[i].set_wheels(l, r, steer)          → 轮速/转角下发
+                              ├── chassis[i].lidar.*                          ← 四个扇区距离 + scan_if_due()
+                              ├── arm.start_world()/start_fixed()/tick()/hold() → 六个关节指令
+                              ├── arm.tool_position()                         ← 夹持点世界坐标
+                              ├── arm.solve_ik()                              ← 关节角 + 残差
+                              ├── gripper.start()/tick()/hold()/force()       → 夹爪指令
+                              ├── perception.estimate_target()                ← 目标粗端中心
+                              ├── perception.object_pose()                    ← 手中物体的实时位姿
+                              ├── frame_hook()                                ← 雷达点云叠加到 viewer
                               clock.step()
-                                  └── MuJoCo mj_step × STEPS_PER_FRAME → 物理演化 → 传感器
+                                  ├─ 仿真：MuJoCo mj_step × STEPS_PER_FRAME → 物理演化 → 传感器
+                                  └─ ROS ：等 /clock 递增 + 补发两车轮速指令
 ```
+
+同一段任务代码在两个后端上的差别只在这张表的右半部分：`SimClock.step()` 直接推进物理，
+`RosClock.step()` 阻塞等下一条 `/clock`；`SimPerception` 自己渲染并分割，
+`RosPerception` 触发采集服务再等 `mm_target_localizer` 出结果。
 
 ### 6.3 指标链路
 
@@ -107,7 +124,8 @@ DualCarMission.metrics（逐阶段 dict）
 
 - `run_wait_concurrent / run_arm_motion_concurrent / run_finger_motion_concurrent / finish_follower / run_two_followers / run_followers_until_primary_done / run_turn_with_secondary / run_two_straight_reverses` 都是这种循环。
 - 副作用耦合：A 车的循环顺带推进 B 车的控制器，所以**改动任一处的时长都会改变另一辆车的轨迹**（见教训：加转向斜坡把 seed 3 的停靠航向改了 71°）。改这类共享时序后必须跑全矩阵。
-- 迁移 ROS 2 时这套循环由节点定时器替代，任务层只保留"当前阶段 + 目标"的状态，不再自己 `step`。
+- ROS 2 侧保留同一套阻塞循环，只是把 `Clock.step()` 换成"等 `/clock`"：任务层仍然自己驱动节奏，桥不会抢跑。机械臂动作、视觉等待这些阶段任务层不刷新底盘指令，所以 `RosClock.step()` 每帧把两车最近一次的轮速指令补发一遍，桥的帧同步才不会每帧超时。
+- 视觉等待期间（`request_estimate()`）也在推进帧并补发指令：图像与 TF 都在帧边界产生，只有推进才会出新帧，这样仿真时间始终由任务层驱动而不是凭墙钟自由跑。
 
 ## 8. 关键参数与设计约束
 
@@ -138,12 +156,13 @@ DualCarMission.metrics（逐阶段 dict）
 | 雷达检测 2.8 m < 制动 3.5 m | 未联合标定 | 真机前做速度-距离标定 |
 | 摩擦/静摩擦门限为仿真整定值 | 未做真机辨识 | 直线/原地转/坡道三组试验回填 |
 | 视觉是渲染深度图 + 地平面拟合 | 用反投影深度做离地分割，无真机标定与去噪 | 换相机驱动 + 手眼标定 + 深度尺度标定 |
-| 控制器仍直接读仿真时钟 | `PathFollower` 等内部用 `base.DATA.time` | 注入 `Clock`（下一阶段） |
+| ROS 侧姿态参数未接通 | 逆解服务固定竖直下压姿态，工具朝向由 `TARGET_QUAT` 决定 | 真机接 servoj 时把姿态并入 SolveIK 请求 |
 
 ## 11. 变更记录
 
 | 时间 | 内容 |
 |---|---|
+| 2026-11-16 | 阶段 2 任务层拆分：`DualCarMission` + 三个路径控制器 + `run_*_concurrent` + 抓取/投放编排 + 任务常量移到零 MuJoCo 的 `mission_core.py`，单进程与 ROS 共用一份；端口扩 `LidarInterface`、`ArmInterface.start_world/tool_position`、`PerceptionInterface.estimate_target/object_pose`，`RobotIO.viewer` 换成每帧渲染回调 `frame_hook`；桥补 `/sim/object_pose`、`car1/pinch` TF、`/car1/lidar/ignore_peer`；launch 给任务节点加 `on_exit=Shutdown()`（否则桥常驻、下一次启动出现两条 `/clock`）；顺手删掉从未被调用的相机参数搜索与死参数 |
 | 2026-11-16 | 阶段 1 构建验证：Ubuntu 22.04 + Humble 上 5 包 `colcon build --symlink-install` 一次通过；冒烟 A 500 帧 = 10.00 s 仿真时间，冒烟 B `vision_error_mm=2.36`；回填 3 个运行期修复（节点收尾顺序、`rosgraph_msgs/Clock` 导入、服务调用改 `call_async` 轮询、机械臂冒烟目标移到车头前 0.5 m）|
 | 2026-11-16 | 盘点清理：删除 3 张过期截图（旧圆柱/旧桶）、6 个从未被引用的模块级常量与若干过期注释；质心偏移改为从模型惯性参数读取 |
 | 2026-11-09 | 被操作对象改为不锈钢监测棒（Ø6×33 + Ø5×169、202 mm、33.5 g）、屏蔽桶改 32 边圆筒（内径 Ø240）、投放改纯重力落桶；采样区间按杆的两端半长从视觉搜索窗内缩；末段直行增加"车头延长线压到终点"判据 |

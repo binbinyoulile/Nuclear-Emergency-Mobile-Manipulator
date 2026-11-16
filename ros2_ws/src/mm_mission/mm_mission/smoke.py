@@ -9,7 +9,8 @@
 3. 车确实能开到目标观测位，**感知节点在真实距离上给出粗端中心**（误差在门限内）；
 4. 机械臂世界坐标目标经逆解服务变成关节流，夹爪开合有状态回读。
 
-它不是任务逻辑，也不做验收判据之外的判断；真正的流程见 ``docs/ros2_stage1_design.md``。
+它不是任务逻辑，也不做验收判据之外的判断；正式流程由 ``mission_core`` 提供，
+``mode:=mission``（默认）跑那套，本模块只在 ``mode:=smoke`` 时使用。
 
 关于 ``VISION_STANDOFF_Y``
 --------------------------
@@ -25,15 +26,17 @@ import math
 
 import numpy as np
 
-# 底盘几何，与 mobile_pick_place.py 的标定值一致（阶段 2 改为 ROS 参数下发）
-WHEEL_RADIUS = 0.1525
-WHEEL_TRACK = 0.555
-STEER_WHEELBASE = 0.500
-STEER_MAX = 0.70
+from mission_core import (
+    MEASURE_STANDOFF_Y,
+    STEER_MAX,
+    STEER_WHEELBASE,
+    WHEEL_RADIUS,
+    WHEEL_TRACK,
+)
 
 # 测量位：车停在目标正南 1.41 m，此时腕部相机离杆约 1.0 m、落在可见带内。
 # 再近（0.85 m）杆会掉出画面下沿，这是相机固定下俯 28.5° 决定的。
-VISION_STANDOFF_Y = 1.41
+VISION_STANDOFF_Y = MEASURE_STANDOFF_Y
 
 VISION_TOLERANCE_M = 0.03
 
@@ -140,9 +143,9 @@ def run(io, node) -> dict:
         raise RuntimeError(f"直行不足：{metrics['car1_travel_m']:.2f} m")
 
     node.set_stage("smoke/驶向观测位")
-    truth = io.perception.object_truth()
+    truth, _ = io.perception.object_pose()
     if not np.all(np.isfinite(truth)):
-        raise RuntimeError("未收到目标真值 /sim/target_truth，无法确定观测位")
+        raise RuntimeError("未收到 /sim/object_pose，无法确定观测位")
     stance = np.array([truth[0], truth[1] - VISION_STANDOFF_Y], dtype=float)
     metrics["stance_error_m"] = round(drive_to(io, car1, car2, stance, 1.20), 3)
 
