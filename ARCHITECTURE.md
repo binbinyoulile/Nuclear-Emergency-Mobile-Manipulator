@@ -162,6 +162,7 @@ DualCarMission.metrics（逐阶段 dict）
 
 | 时间 | 内容 |
 |---|---|
+| 2026-11-16 | 修轨道 B 首次运行暴露的两个坐标系错误：①桥把 `car1/arm_base_link`、`car1/pinch` 的世界坐标挂在车体/臂座父帧下，TF 合成后世界目标偏 ~20 m，任务卡在 `4_grasp`（IK 残差 18.7 m）——改为 `_send_world_tf()`，父帧固定 `map`，不再开放 parent 参数；②`RosArm.start_fixed` 把固定基座系目标直接当臂座系用，少了 `FIXED_BASE_ROT = diag(-1,-1,1)` 的 180°（`arm_ik_scene.xml` 的 base 体旋转），机械臂会安静地走到镜像位置（残差 1.65 mm 看不出来）——常数移入 `mission_core` 并由单进程入口用模型复核，`scripts/check_ports.py` 增加"ROS 与单进程 `start_fixed` 落到同一 IK 目标"的往返检查 |
 | 2026-11-16 | 阶段 2 任务层拆分：`DualCarMission` + 三个路径控制器 + `run_*_concurrent` + 抓取/投放编排 + 任务常量移到零 MuJoCo 的 `mission_core.py`，单进程与 ROS 共用一份；端口扩 `LidarInterface`、`ArmInterface.start_world/tool_position`、`PerceptionInterface.estimate_target/object_pose`，`RobotIO.viewer` 换成每帧渲染回调 `frame_hook`；桥补 `/sim/object_pose`、`car1/pinch` TF、`/car1/lidar/ignore_peer`；launch 给任务节点加 `on_exit=Shutdown()`（否则桥常驻、下一次启动出现两条 `/clock`）；顺手删掉从未被调用的相机参数搜索与死参数 |
 | 2026-11-16 | 阶段 1 构建验证：Ubuntu 22.04 + Humble 上 5 包 `colcon build --symlink-install` 一次通过；冒烟 A 500 帧 = 10.00 s 仿真时间，冒烟 B `vision_error_mm=2.36`；回填 3 个运行期修复（节点收尾顺序、`rosgraph_msgs/Clock` 导入、服务调用改 `call_async` 轮询、机械臂冒烟目标移到车头前 0.5 m）|
 | 2026-11-16 | 盘点清理：删除 3 张过期截图（旧圆柱/旧桶）、6 个从未被引用的模块级常量与若干过期注释；质心偏移改为从模型惯性参数读取 |

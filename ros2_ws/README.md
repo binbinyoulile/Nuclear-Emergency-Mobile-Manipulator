@@ -83,7 +83,11 @@ ros2 topic hz /clock                 # 50 Hz（跑满即停，属于正常）
 ros2 topic hz /car1/odom             # 50 Hz
 ros2 topic hz /car1/obstacle_summary # 10 Hz
 ros2 topic hz /sim/object_pose       # 50 Hz（被操作对象的实时位姿）
-ros2 run tf2_tools view_frames       # map → carN/base_link、car1/arm_base_link、car1/camera_link、car1/pinch
+ros2 run tf2_tools view_frames       # 5 个帧全是 map 的子帧：carN/base_link、car1/arm_base_link、car1/camera_link、car1/pinch
+
+# 单独确认这两个帧的世界位姿（父帧是 map，值即世界坐标，应落在车体附近而不是 ~20 m 外）
+ros2 run tf2_ros tf2_echo map car1/arm_base_link
+ros2 run tf2_ros tf2_echo map car1/pinch
 ```
 
 任务结束会打印一行 `RESULT_JSON:`，同时发布到 `/mission/result`。
@@ -103,8 +107,15 @@ ros2 run tf2_tools view_frames       # map → carN/base_link、car1/arm_base_li
   "绕行同伴车"）。详见设计文档 5.5。
 - **帧同步的两个补丁**：`RosClock.step()` 每帧补发两车轮速指令，`request_estimate()`
   在等感知时继续推进帧——否则机械臂/视觉阶段桥会每帧超时，仿真也会脱离任务层自由跑。
+- **TF 只有一层**：桥发布的 5 个帧（`carN/base_link`、`car1/arm_base_link`、
+  `car1/camera_link`、`car1/pinch`）父帧**全是 `map`**，因为值都是 MuJoCo 世界量。
+  `car1/arm_base_link` 不等于"固定基座坐标系"：`arm_ik_scene.xml` 的 base 体相对底盘臂座
+  转了 180°（`mission_core.FIXED_BASE_ROT`），`ArmInterface.start_fixed` 的入参是后者。
+  这条链路错了不会报错——残差照样几毫米，机械臂只是走到镜像位置。
+  `scripts/check_ports.py` 的第 3 项就是钉这个往返。
 - **验证状态**：任务层拆分后单进程轨道 A 复跑 `seed 0-20`，与重构前基线逐位一致；
-  ROS 轨道 B（21 种子）待在 Ubuntu 上跑。
+  ROS 轨道 B（21 种子）等在 Ubuntu 上跑（首次运行暴露的 TF 父帧与 `start_fixed` 坐标系
+  两处错误已修，见共享区 README 的编译记录）。
 
 `mode:=smoke` 保留为链路冒烟，判据（离线用单进程后端跑过 seed 2/4/6/7/14，Ubuntu 端
 seed 6 实测一次）：

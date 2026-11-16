@@ -522,23 +522,26 @@ class SimBridge(Node):
         self._camera_info_sent = True
 
     def _publish_tf(self, stamp: Time) -> None:
+        """发布全部 TF 帧。
+
+        这里所有位姿都直接取 MuJoCo 的世界量（``xpos``/``xmat``/``site_xpos``），
+        所以父帧一律是 ``map``——见 ``_send_world_tf`` 的说明。
+        """
         for name, car in zip(CAR_NAMES, self._cars):
             pos, yaw = car.pose()
-            self._send_tf(
+            self._send_world_tf(
                 stamp,
-                "map",
                 f"{name}/base_link",
                 (float(pos[0]), float(pos[1]), float(pos[2])),
                 (0.0, 0.0, float(np.sin(yaw / 2.0)), float(np.cos(yaw / 2.0))),
             )
-        # 机械臂基座（任务层用它把"基座系目标点"换算到世界系）
+        # 机械臂基座（任务层用它把"臂座系目标点"换算到世界系）
         arm_pos = self._data.xpos[self._base.ARM_BASE_BODY]
         arm_mat = self._data.xmat[self._base.ARM_BASE_BODY].reshape(3, 3)
         arm_quat = np.zeros(4)
         self._mujoco.mju_mat2Quat(arm_quat, arm_mat.reshape(9))
-        self._send_tf(
+        self._send_world_tf(
             stamp,
-            "car1/base_link",
             "car1/arm_base_link",
             (float(arm_pos[0]), float(arm_pos[1]), float(arm_pos[2])),
             (float(arm_quat[1]), float(arm_quat[2]), float(arm_quat[3]), float(arm_quat[0])),
@@ -548,9 +551,8 @@ class SimBridge(Node):
         cam_mat = self._data.cam_xmat[self._cam_id].reshape(3, 3)
         quat = np.zeros(4)
         self._mujoco.mju_mat2Quat(quat, cam_mat.reshape(9))
-        self._send_tf(
+        self._send_world_tf(
             stamp,
-            "map",
             "car1/camera_link",
             (float(cam_pos[0]), float(cam_pos[1]), float(cam_pos[2])),
             (float(quat[1]), float(quat[2]), float(quat[3]), float(quat[0])),
@@ -561,18 +563,25 @@ class SimBridge(Node):
         pinch_mat = self._data.site_xmat[self._legacy.PINCH_SITE].reshape(3, 3)
         pq = np.zeros(4)
         self._mujoco.mju_mat2Quat(pq, pinch_mat.reshape(9))
-        self._send_tf(
+        self._send_world_tf(
             stamp,
-            "car1/arm_base_link",
             "car1/pinch",
             (float(pinch_pos[0]), float(pinch_pos[1]), float(pinch_pos[2])),
             (float(pq[1]), float(pq[2]), float(pq[3]), float(pq[0])),
         )
 
-    def _send_tf(self, stamp, parent, child, xyz, xyzw) -> None:
+    def _send_world_tf(self, stamp, child, xyz, xyzw) -> None:
+        """发布一个"父帧 = map"的 TF。
+
+        故意不开放 parent 参数：本节点的所有位姿都是 MuJoCo 世界量，唯一正确的父帧
+        就是 ``map``。曾经的写法允许传 parent，于是 ``car1/arm_base_link`` 用世界坐标
+        却挂在 ``car1/base_link`` 下，TF 合成时把车体位置又加了一遍，世界目标整体偏
+        ~20 m（任务卡在 4_grasp，IK 残差 18.7 m）。把参数删掉这种错误就写不出来。
+        真机上这几帧由各自驱动发布真正的相对变换，届时再按需补 parent 参数。
+        """
         msg = TransformStamped()
         msg.header.stamp = stamp
-        msg.header.frame_id = parent
+        msg.header.frame_id = "map"
         msg.child_frame_id = child
         msg.transform.translation.x = xyz[0]
         msg.transform.translation.y = xyz[1]

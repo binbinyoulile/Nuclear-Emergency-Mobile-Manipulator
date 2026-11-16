@@ -85,10 +85,17 @@ PINCH_ABOVE_FLOOR = 0.0185
 GRASP_WORLD_Z = GROUND_Z + PINCH_ABOVE_FLOOR
 APPROACH_WORLD_Z = GRASP_WORLD_Z + 0.17
 LIFT_WORLD_Z = GRASP_WORLD_Z + 0.30
-# 搬运姿态，位于底盘轮廓内；机械臂基座坐标系。
+# 搬运姿态，位于底盘轮廓内；**固定基座坐标系**（arm_ik_scene.xml 的 base 体）。
 CARRY_FIXED = np.array([0.20, 0.0, 0.45])
 # 工具坐标系 +Y 轴朝下，wxyz。
 TARGET_QUAT = np.array([0.0, 1.0, 0.0, 0.0])
+# 底盘臂座系 → 固定基座（IK 模型）系的旋转固定值。arm_ik_scene.xml 里 base 体相对底盘
+# 转了 180°（建模时把 URDF 的 +Y 朝前翻成 +X 朝前），所以同一个物理点在这两个坐标系里
+# 的 x/y 都反号：基座系 (0.20, 0, 0.45) 对应 chassis 臂座系 (-0.20, 0, 0.45)。
+# 任何"把固定基座系目标换算到世界系"的后端都必须乘它（顺序见 RosArm.start_fixed），
+# 漏掉不会报错，只会让机械臂安静地走到镜像位置上——历史上真的这样错过一次。
+# 单进程后端不需要它：solve_ik_fixed 直接吃固定基座系，没有中间坐标系。
+FIXED_BASE_ROT = np.diag([-1.0, -1.0, 1.0])
 FINGER_OPEN = 0.0
 FINGER_CLOSE = 255.0
 

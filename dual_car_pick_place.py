@@ -92,6 +92,15 @@ if _ROD_COM_OFFSET_MODEL != ROD_COM_OFFSET_M:
         f"模型={_ROD_COM_OFFSET_MODEL!r}, 常数={ROD_COM_OFFSET_M!r}"
     )
 
+# 底盘臂座系 → 固定基座（IK 模型）系的旋转：单进程后端直接用模型算出来的，ROS 后端用
+# mission_core 里的常数（它没有 MuJoCo）。两边必须逐位相同，否则同一个 CARRY_FIXED 在
+# 两条轨道上会落到镜像位置。
+if not np.array_equal(base.FIXED_BASE_ROT, mission_core.FIXED_BASE_ROT):
+    raise RuntimeError(
+        "mission_core.FIXED_BASE_ROT 与 arm_ik_scene.xml 的臂座旋转不一致："
+        f"模型=\n{base.FIXED_BASE_ROT}\n常数=\n{mission_core.FIXED_BASE_ROT}"
+    )
+
 
 def _id(obj_type, name: str) -> int:
     """查询 MuJoCo 命名对象并校验是否存在。

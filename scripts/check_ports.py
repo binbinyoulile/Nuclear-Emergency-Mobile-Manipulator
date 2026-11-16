@@ -20,6 +20,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import numpy as np
+
 PROJECT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT))
 # ROS 2 包的源码根（colcon 安装前 `mm_mission` 包体就在这一层）
@@ -41,6 +43,28 @@ class _StubNode:
     sim_time = 0.0
     frame_dt = 0.02
     contacts = 0
+
+
+class _ArmStubNode:
+    """只实现 `start_fixed` 换算链需要的节点方法，并记录最终下发的世界目标。"""
+
+    def __init__(self, base_pos: np.ndarray, base_rot: np.ndarray) -> None:
+        self._base_pos = base_pos
+        self._base_rot = base_rot
+        self.world_target: np.ndarray | None = None
+
+    def arm_base_to_world(self, point):
+        return self._base_pos + self._base_rot @ np.asarray(point, dtype=float)
+
+    def solve_ik_world(self, point):
+        self.world_target = np.asarray(point, dtype=float).copy()
+        return np.zeros(6), 0.0
+
+    def arm_joint_positions(self):
+        return np.zeros(6)
+
+    def publish_arm(self, q) -> None:
+        pass
 
 
 def check_ros_adapters() -> list[str]:
@@ -121,11 +145,44 @@ def check_sim_adapters() -> list[str]:
     return failures
 
 
+def check_start_fixed_chain() -> list[str]:
+    """确认 ROS 后端的 ``start_fixed`` 与单进程后端落到同一个 IK 目标。
+
+    ``RosArm.start_fixed`` 要经过"固定基座系 → 臂座系 → 世界系"，再由桥的逆解服务换算
+    回固定基座系。这条链路里任何一处坐标系搞错都不会抛异常——残差仍然只有几毫米，机械臂
+    只是安静地走到关于臂座镜像的位置上（实测 ‖残差‖ 1.65 mm vs 12.98 mm，光看残差根本
+    分不出来）。所以这里做一次离线往返：喂同一个 ``CARRY_FIXED``，把 ROS 侧算出的世界点
+    用单进程的 ``world_target_to_fixed`` 反算回来，必须逐位相等。
+    """
+    import dual_car_pick_place as legacy  # noqa: PLC0415
+    import mobile_pick_place as base  # noqa: PLC0415
+
+    from mm_mission.adapters import RosArm  # noqa: PLC0415
+
+    legacy.initialize_mission(3)
+    node = _ArmStubNode(
+        base.DATA.xpos[base.ARM_BASE_BODY].copy(),
+        base.DATA.xmat[base.ARM_BASE_BODY].reshape(3, 3).copy(),
+    )
+    RosArm(node, None).start_fixed(base.CARRY_FIXED, 1.0)
+    if node.world_target is None:
+        return ["start_fixed 没有下发世界目标"]
+    fixed, _ = base.world_target_to_fixed(node.world_target)
+    if not np.allclose(fixed, base.CARRY_FIXED, atol=1e-9):
+        return [
+            "start_fixed 坐标系换算不一致：ROS 落到 "
+            f"{np.round(fixed, 4)}，单进程是 {np.round(base.CARRY_FIXED, 4)}"
+            "（差了 FIXED_BASE_ROT 的 180°？）"
+        ]
+    return []
+
+
 def main() -> int:
     failures = []
     for name, check in (
         ("ROS 适配器", check_ros_adapters),
         ("仿真适配器", check_sim_adapters),
+        ("start_fixed 换算链", check_start_fixed_chain),
     ):
         try:
             problems = check()

@@ -207,10 +207,21 @@ Snapshot.srv         string name
 | frame | 内容 | 发布者 |
 |---|---|---|
 | `map` | 世界系（场地原点） | — |
-| `car{1,2}/base_link` | 底盘中心 | sim_bridge（50 Hz，由位姿直接生成） |
-| `car1/camera_link` | D435i 光心 | sim_bridge（50 Hz） |
-| `car1/arm_base_link` | 机械臂基座（任务层用它把基座系目标换算到世界系） | sim_bridge（50 Hz，父系 `car1/base_link`） |
-| `car1/pinch` | 夹持点（pinch 站点），投放对中要量"夹持点 → 质心" | sim_bridge（50 Hz，父系 `car1/arm_base_link`） |
+| `car{1,2}/base_link` | 底盘中心 | sim_bridge（50 Hz，父系 `map`） |
+| `car1/camera_link` | D435i 光心 | sim_bridge（50 Hz，父系 `map`） |
+| `car1/arm_base_link` | 机械臂基座（任务层用它把臂座系目标换算到世界系） | sim_bridge（50 Hz，父系 `map`） |
+| `car1/pinch` | 夹持点（pinch 站点），投放对中要量"夹持点 → 质心" | sim_bridge（50 Hz，父系 `map`） |
+
+**父系一律是 `map`**，因为桥发布的值全是 MuJoCo 世界量（`xpos`/`xmat`/`site_xpos`）。
+曾经把 `car1/arm_base_link` 挂在 `car1/base_link` 下、`car1/pinch` 挂在 `car1/arm_base_link`
+下，但给的值仍是世界坐标，TF 合成时把车体/臂座的位置又加了一遍：世界目标整体偏 ~20 m，
+任务卡在抓取阶段（IK 残差 18.7 m）。所以 `_send_world_tf()` 干脆不开放 parent 参数——
+值是世界量，父帧只能是 `map`，写错都写不出来。真机上这几帧由各自驱动发布真正的相对变换。
+
+**`car1/arm_base_link` 不是"固定基座坐标系"**：`arm_ik_scene.xml` 的 base 体相对底盘臂座
+转了 180°（`FIXED_BASE_ROT = diag(-1,-1,1)`），而 `ArmInterface.start_fixed` 的入参是固定
+基座系。任务层只在这一个方法上需要翻回来，顺序见 `RosArm.start_fixed`；漏掉不会报错，
+残差仍然只有几毫米，机械臂只是安静地走到关于臂座镜像的位置。
 
 相机是**眼在手上**（装在 UR10e 末端 `wrist_3_link` 上），仿真里直接取世界位姿发布，不在阶段 1 拼六轴链；
 真机阶段由 `ur_robot_driver` + `robot_state_publisher` 给出完整链。

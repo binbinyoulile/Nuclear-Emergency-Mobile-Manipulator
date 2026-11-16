@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import numpy as np
 
+import mission_core
 from robot_interface import (
     ArmInterface,
     ChassisInterface,
@@ -168,8 +169,10 @@ class RosChassis(ChassisInterface):
 class RosArm(ArmInterface):
     """六轴机械臂端口：插值在任务侧完成，逆解走驱动侧服务。
 
-    ``start_fixed`` 的入参是 **car1/arm_base_link** 坐标系，通过 TF 换算到世界系后
-    再请求逆解；``start_world`` 直接吃世界坐标。姿态参数本阶段不生效
+    ``start_world`` 直接吃世界坐标；``start_fixed`` 的入参是**固定基座坐标系**
+    （与单进程的 ``solve_ik_fixed`` 同一个系，即 ``arm_ik_scene.xml`` 的 base 体），
+    它和 TF 的 ``car1/arm_base_link`` 差一个 ``mission_core.FIXED_BASE_ROT``，
+    换算顺序见 ``start_fixed``。姿态参数本阶段不生效
     （桥的逆解服务固定用 TARGET_QUAT，真机接 servoj 时再启用）。
     """
 
@@ -189,7 +192,15 @@ class RosArm(ArmInterface):
         self._node.publish_arm(self._hold_q)
 
     def start_fixed(self, target_pos_fixed, duration, target_quat=None) -> None:
-        target_world = self._node.arm_base_to_world(np.asarray(target_pos_fixed, float))
+        """固定基座系目标 → 臂座系 → 世界系 → 逆解服务。
+
+        漏掉 ``FIXED_BASE_ROT`` 不会报错：机械臂会安静地走到关于臂座镜像的位置
+        （残差只有几毫米，看不出来），整段投放姿态就全错了。
+        """
+        local = mission_core.FIXED_BASE_ROT.T @ np.asarray(
+            target_pos_fixed, dtype=float
+        )
+        target_world = self._node.arm_base_to_world(local)
         self.start_world(target_world, duration, target_quat)
 
     def start_world(self, target_pos_world, duration, target_quat=None) -> None:
