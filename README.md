@@ -1,6 +1,6 @@
 <div align="center">
 
-<img alt="version" src="https://img.shields.io/badge/version-v1.0.0-2f6feb?style=for-the-badge" />
+<img alt="baseline" src="https://img.shields.io/badge/baseline-v1.0.0-2f6feb?style=for-the-badge" />
 <img alt="license" src="https://img.shields.io/badge/license-MIT-yellow?style=for-the-badge" />
 <img alt="python" src="https://img.shields.io/badge/python-3.10%2B%20%7C%203.13.12-3776AB?style=for-the-badge&logo=python&logoColor=white" />
 <img alt="mujoco" src="https://img.shields.io/badge/MuJoCo-3.16.0-orange?style=for-the-badge" />
@@ -53,7 +53,8 @@
 - 物理碰撞体是一个按真实包络定位的 Box（车体 `65 kg`），四轮按真实轴距/轮距布置，各 `2.5 kg`。
 - 纯外观件（车身外壳、前后防撞管、顶部安装板、雷达托盘）全部 `contype="0" conaffinity="0"`、`mass="0"`，不参与物理。
 - 已知偏差：参数表标注"四轮差速转向"，但控制器运动学使用前轮转向角；去掉转向节后实测原地转仅 `0.13 rad/s` 且车体滑移 `0.3 m`，任务定位精度不足，因此暂保留前轮转向节作为等效机构，待控制器改为纯差速转向后再移除。
-- 机械臂模型（Menagerie UR10e）自身约 `33.8 kg`，因此一号车整机仿真质量约 `108.8 kg`（真实 75 kg 底盘 + UR10e + 夹爪）。
+- 机械臂模型（Menagerie UR10e `32.7 kg` + 2F-85 `0.9 kg`）因此一号车整机仿真质量 `108.6 kg`
+  （真实 75 kg 底盘 + 机械臂与夹爪）；二号车含 Ø240 屏蔽桶（`3.0 kg`）共 `78.0 kg`。
 
 ## 被操作对象与屏蔽桶
 
@@ -63,12 +64,12 @@
 |---|---:|
 | 粗端 / 细端 | `Ø6 mm × 33 mm` / `Ø5 mm × 169 mm` |
 | 总长 | `202 mm` |
-| 材料 | 不锈钢 `7930 kg/m³`，整件约 `33.5 g`，质心距粗端 `92 mm` |
+| 材料 | 不锈钢 `7930 kg/m³`，整件 `33.5 g`，质心距粗端 `95 mm`（距 body 原点 `79 mm`，由模型惯性参数直接读出） |
 | 外观 | 端面 0.25 mm 倒角网格（`models/chopstick/chopstick.obj`），银灰高光 |
 | 碰撞体 | 两段标准圆柱（长度各缩 0.3 mm 代表倒角），`condim=6`，滚动摩擦 `0.03` |
 
 - 物体原点放在**粗端圆柱中心**：真值点、视觉输出的粗端点、抓取点三者天然重合。
-- 二号车屏蔽桶是 32 边圆筒（内径 `Ø240 mm`、深 `260 mm`、底厚 `20 mm`）。桶口比监测棒长，
+- 二号车屏蔽桶是 32 边圆筒（内径 `Ø240 mm`、内深 `240 mm`、外高 `260 mm`、底厚 `20 mm`）。桶口比监测棒长，
   夹住粗端的机械臂把质心对准桶心后松爪，监测棒整根自由落进桶底。
 - 为什么桶口必须大于杆长：刚性杆只能从"开口 ≥ 杆长"或"倾斜着"进入更窄的洞。实测 `Ø100` / `Ø130`
   桶口时，水平杆必然横架在桶沿上；把夹持力从 `5.1 N` 提到 `48.4 N` 也压不进去（杆变成刚性探针、
@@ -130,11 +131,14 @@ python scripts\fetch_models.py
 mobile_manipulator/
 ├── dual_car_pick_place.py   # 双车任务状态机、雷达避障、视觉与协同投放
 ├── mobile_pick_place.py     # 共享底盘、IK、夹爪与仿真运动底层
+├── robot_interface.py       # 硬件端口抽象：Clock / Chassis / Arm / Gripper / Perception
 ├── dual_car_scene.xml       # 双车主场景
 ├── arm_ik_scene.xml         # 机械臂 IK 辅助场景
-├── models/                  # 自建 MJCF；二进制 mesh 由脚本下载
+├── models/                  # 自建 MJCF 与监测棒网格；Menagerie 二进制 mesh 由脚本下载
 ├── scripts/fetch_models.py  # Menagerie 资产下载脚本
 ├── scripts/run_matrix.py    # 多 seed 回归矩阵（CSV + 每 seed 日志）
+├── scripts/compare_metrics.py  # 两份回归 CSV 逐指标对比
+├── reports/                 # regression.csv（入库）、baselines/ 历史基线、logs/（本地忽略）
 ├── docs/screenshots/        # 5 张核心展示截图
 ├── requirements.txt
 ├── setup.ps1
@@ -173,7 +177,7 @@ geom 一一对应，改一处必须同步另一处。
 1. `get_camera_data()`：MuJoCo `Renderer` 采集 RGB/depth；ROS2 中替换为 D435i 图像话题订阅。
 2. `depth_to_world()`：整幅深度图反投影成世界点云（`fx=fy=(H/2)/tan(fovy/2)`，相机 +Z 与视线反向，深度取负）。
 3. `detect_steel_target()`：点云先最小二乘拟合地面平面，取离地 0.8~30 mm 的点，连通域只保留与搜索区相交者，
-   二维 PCA 求轴线、1%/99% 分位定两端，再比较两端外侧 20% 的上表面高度（Ø6 粗端比 Ø5 细端高 0.5 mm）判定粗端。
+   二维 PCA 求轴线、1%/99% 分位定两端，再比较两端外侧 20% 的上表面高度（Ø6 粗端的顶面比 Ø5 细端高 1 mm）判定粗端。
 4. 任务状态机：仅使用视觉返回坐标执行抓取，真实物体坐标只用于误差验证。
 
 为什么不用颜色：不锈钢本色在中性灰地面上没有色差。为什么不能拿单帧深度当绝对高度：渲染器深度带约 0.15% 的系统性尺度偏差，
@@ -196,22 +200,28 @@ D:\Python313\python.exe .\scripts\run_matrix.py --seeds 0-20
 
 - 通过率：`21/21`
 - D435i 视觉坐标误差：`0.83 ~ 2.66 mm`
-- 桶内质心 XY 误差：`0.001 ~ 0.009 m`（容差 `0.05 m`）
-- 投放后监测棒倾角：`63.5 ~ 67.0°`（整根横躺进桶，不立起、不架在桶沿）
-- 返航后物体仍在桶内：`21/21`（终态水平残差 `0.003 ~ 0.011 m`）
+- 桶内质心 XY 误差：`0.002 ~ 0.008 m`（容差 `0.05 m`）
+- 投放后监测棒倾角：`63.0 ~ 66.9°`（整根横躺进桶，不立起、不架在桶沿）
+- 返航后物体仍在桶内：`21/21`（终态水平残差 `0.004 ~ 0.013 m`）
 - 停靠时刻两车中心距：安全阈值 `0.82 m`，全程最小中心距 `0.977 ~ 1.091 m`，物理接触 `0`
 - 回起点误差：CAR1 `0.084 ~ 0.086 m`，CAR2 `0.090 ~ 0.096 m`（阈值 `0.20 m`）
-- 单次仿真时长：`59.7 ~ 61.4 s`
+- 单次仿真时长：`59.5 ~ 61.9 s`
 
 回归矩阵覆盖的是"随机落点 + 固定流程"，随机区间本身就是用例的一部分：202 mm 的杆一旦
 戳出视觉搜索窗，观测位就拍不全、粗端判错约一个杆长；更极端的落点还会让车停在相机下视场
 之外、机械臂够不到。这类失败反映的是用例不合理而非算法缺陷，因此采样区间按杆的两端半长
 从搜索窗内缩（见上文"被操作对象与屏蔽桶"），21 个种子生成的杆全部完整落在窗内。
 
-历史基线快照保存在 `reports/baselines/`（`v1.0.0.csv` / `stage0_sync.csv` / `stage0_refactor.csv`），
-可用 `python scripts/compare_metrics.py a.csv b.csv` 做逐指标对比，验证重构前后是否等价。
+历史基线快照保存在 `reports/baselines/`：`v1.0.0.csv`（旧 Ø20 mm 圆柱基线）、
+`stage0_sync.csv` / `stage0_refactor.csv`（阶段 0 重构等价性）、`rod_drop.csv`（当前
+不锈钢监测棒 + Ø240 屏蔽桶）。用 `python scripts/compare_metrics.py a.csv b.csv` 做逐指标
+对比，验证重构前后是否等价。
 
 ## 版本与里程碑
+
+当前 `master` 在 v1.0.0 之上改掉了两处验收口径：被操作对象从 Ø20 mm 圆柱换成不锈钢监测棒，
+屏蔽桶从 Ø100 锥形口换成 Ø240 圆筒，投放回退为纯重力落桶。这一版回归 21/21、指标见上一节，
+尚未打 tag——顶部徽章标的是最新**冻结基线** v1.0.0，不是当前工作树。
 
 ### v1.0.0 — 仿真基线闭环（2026-11-07，tag `v1.0.0`）
 

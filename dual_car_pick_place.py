@@ -88,16 +88,6 @@ CAR1_SEARCH_PATH = [
     (float(CAR1_SEARCH_STOP[0]), float(CAR1_SEARCH_STOP[1])),
 ]
 RETURN_LINE_Y = -0.25
-CAR1_RETURN_LANE_PATH = [
-    (-3.00, 20.20),
-    (-3.50, 22.00),
-]
-CAR2_RETURN_LANE_PATH = [
-    (4.10, 21.20),
-    (4.00, 23.00),
-]
-CAR1_RETURN_Y = -3.00
-CAR2_RETURN_Y = -3.00
 RADIATION_EXIT_Y = 17.50
 # 二号车停靠中心 Y：绿框下边界再往南 0.64 m。
 # 车体在任意朝向下投影最大 0.578 m（0.912×0.710 的车斜着放最宽），留 0.06 m 余量，
@@ -113,7 +103,6 @@ DOCK_POSE_MARGIN = 0.20
 # 二号车先在停靠点正南这么远集结，再直线北上停靠，避免贴近一号车横向挪车。
 CAR2_STAGING_DY = 1.20
 DOCK_OFFSET_STEP = 0.01
-DOCK_COMFORT_WEIGHT = 10.0
 CAR2_MIN_SEPARATION = 0.82
 
 BUCKET_BASE_Z = 0.40356                 # 二号车顶面
@@ -122,16 +111,21 @@ BUCKET_FLOOR_Z = BUCKET_BASE_Z + 0.02   # 桶底上表面
 BUCKET_OPENING_Z = BUCKET_BASE_Z + BUCKET_HEIGHT
 DROP_WORLD_Z = BUCKET_OPENING_Z + 0.035
 PRE_DROP_WORLD_Z = BUCKET_OPENING_Z + 0.10
-# 投放改为"倾斜入桶"：桶内径 0.11 m、深 0.18 m，筷子 0.202 m 平躺着放不进去，
-# 横着送过去只会卡在桶口两侧。因此投放前把工具绕自身 x 轴下俯，让细端先探进桶口，
-# 松爪后靠自重与桶壁碰撞翻成斜立在桶里的姿态。全程不做空中姿态调整，工具自旋沿用
-# 抓取时那一档。
+# 投放是纯重力自由落体：桶内径 0.24 m 比 0.202 m 的杆长，所以只要把**质心**对到
+# 桶心、在桶口上方 6 cm 松爪，杆就整根落进桶底。更窄的桶口（Ø100 / Ø130）试过：
+# 水平杆必然横架在桶沿上，加大夹持力只会让杆变成刚性探针、把机械臂顶住压不下去。
 PLACE_APPROACH_TIME = 2.4
 PLACE_DESCEND_TIME = 4.0
 PLACE_INSERT_Z = BUCKET_OPENING_Z + 0.06    # 松爪时夹持点的高度：杆悬在桶口正上方
 PLACE_SETTLE_TIME = 2.0
 BUCKET_XY_TOL = 0.05
-BUCKET_ROD_COM_Y = 0.092                     # 筷子质心距粗端，m
+# 监测棒质心到 body 原点（粗端截面中心）的轴向距离，直接从模型的惯性参数读，
+# 不写死。曾经写死成 0.092（旧 Ø10/Ø8 杆的数、而且是"距粗端"），结果投放时把
+# 偏了 13 mm 的点当成质心，白白吃掉桶口一半余量。
+_OBJ_BODY_ID = mujoco.mj_name2id(
+    base.MODEL, mujoco.mjtObj.mjOBJ_BODY, "grasp_object"
+)
+ROD_COM_OFFSET = float(np.linalg.norm(base.MODEL.body_ipos[_OBJ_BODY_ID]))
 # 一号车停车距离：抓取位按机械臂可达性取 0.85 m；近距测量位取 1.41 m（腕部相机
 # 离目标约 1.0 m，落在 D435i 28.5° 固定下俯的可见带内），详见 run() 中的注释。
 GRASP_STANDOFF_Y = 0.85
@@ -170,7 +164,6 @@ SKID_TURN_SPINDOWN_TIME = 0.35
 # 左右轮速差约 ±29 rad/s，实测直接把车甩飞（车体升到 0.59 m、落地悬空卡死）。
 MAX_YAW_RATE = 1.5
 
-SIM_TRUTH_TARGET = np.zeros(3, dtype=float)
 VISION_LAST: dict[str, np.ndarray] = {}
 # 调试开关：DUAL_TRACE=1 时按 0.25 s 输出路径跟随器内部状态。
 _TRACE = os.environ.get("DUAL_TRACE") == "1"
@@ -1514,8 +1507,8 @@ def detect_steel_target(
         ① 反投影得到点云，取 z 落在 (0.8, 30) mm 的点；
         ② 连通域分解，只保留与搜索区有交集的连通域（排除绿色边框等区域外结构）；
         ③ 对最大连通域做二维 PCA 得到轴线，投影后取 1%/99% 分位当作两端；
-        ④ 两端各取外侧 20% 的点、比较 90% 分位高度：粗端 Ø6 mm 上表面比细端高
-           0.5 mm，高的一侧判为粗端；差异不足 0.2 mm 时退回任务约定的朝向（粗端
+        ④ 两端各取外侧 20% 的点、比较 90% 分位高度：粗端 Ø6 mm 的顶面比细端高
+           1 mm，高的一侧判为粗端；差异不足 0.2 mm 时退回任务约定的朝向（粗端
            在 -X 一侧）；
         ⑤ 粗端“杆端”沿轴线向内推 16.5 mm，得到粗端圆柱中心——真值点、抓取点、
            视觉点在这里三者重合。
@@ -1706,9 +1699,9 @@ def execute_cooperative_place(
     副作用：
         推进机械臂/夹爪、打印入桶站点与物体位姿。
     说明：
-        桶内径 0.24 m、深 0.26 m。筷子长 0.202 m，所以必须先把**质心**对到桶心
-        （夹持点在粗端，比质心靠外 92 mm），整根杆才落在 Ø240 的桶口投影内、不会横搭
-        在桶沿上；对准后在桶口正上方 6 cm 松爪，杆靠重力落进桶底。
+        桶内径 0.24 m、内深 0.24 m（外高 0.26 m）。筷子长 0.202 m，所以必须先把
+        **质心**对到桶心（夹持点贴着粗端，离质心 79 mm），整根杆才落在桶口投影内、
+        不会横搭在桶沿上；对准后在桶口正上方 6 cm 松爪，杆靠重力落进桶底。
         对准用实测杆轴：夹爪只能传递绕竖直轴的转动，杆在夹爪里可能已经相对工具转过
         一个角度。（"夹着杆压到桶口以下再松"和"加大夹持力硬压"都试过：前者杆会被桶沿
         顶住、从夹爪里向上滑脱；后者杆变成刚性探针、机械臂直接压不动。桶口小于杆长时
@@ -1726,7 +1719,7 @@ def execute_cooperative_place(
     # 45 mm，而 202 mm 的杆在 Ø240 桶口里每侧只有约 19 mm 余量，偏了就会横架在桶沿）。
     # 这里直接量"夹持点 → 质心"的实际偏移，再把它反推到桶心正上方。
     rod_com = base.DATA.qpos[base.OBJ_QADR : base.OBJ_QADR + 3] + (
-        BUCKET_ROD_COM_Y * axis
+        ROD_COM_OFFSET * axis
     )
     offset = rod_com - base.DATA.site_xpos[site_id]
     insert = np.array([bucket[0], bucket[1], PLACE_INSERT_Z]) - np.array(
@@ -1744,7 +1737,7 @@ def execute_cooperative_place(
     # Ø240 桶口里每侧只有约 19 mm 余量——偏出这个量就会横架在桶沿上。
     for _ in range(2):
         com_now = base.DATA.qpos[base.OBJ_QADR : base.OBJ_QADR + 3] + (
-            BUCKET_ROD_COM_Y * held_rod_axis()
+            ROD_COM_OFFSET * held_rod_axis()
         )
         err = com_now[:2] - np.array([bucket[0], bucket[1]])
         print(f"  drop centring residual = {np.round(err * 1000, 1)} mm")
@@ -2221,7 +2214,7 @@ class SimGripper(GripperInterface):
 
 
 class SimPerception(PerceptionInterface):
-    """仿真感知：离屏渲染取图 + HSV/深度定位，真值仅用于验收。"""
+    """仿真感知：离屏渲染取图 + 深度离地分割定位，真值仅用于验收。"""
 
     def capture(self) -> tuple[np.ndarray, np.ndarray]:
         return get_camera_data()
@@ -2632,10 +2625,10 @@ class DualCarMission:
                 -62.0,
             )
         obj_after_drop = self.io.perception.object_truth()
-        # 判据用"筷子质心"而不是"粗端原点"：0.202 m 的杆塞进内径 0.11 m 的桶里只能斜躺，
-        # 粗端必然贴着桶壁（离桶心约 0.055 m），拿原点判会把正确投放误判成失败。
+        # 判据用"筷子质心"而不是"粗端原点"：夹持点贴着粗端，origin 离质心 79 mm，
+        # 杆落进桶里还会滚一段，拿原点判会把正确投放误判成偏移。
         rod_axis = held_rod_axis()
-        rod_com = obj_after_drop + BUCKET_ROD_COM_Y * rod_axis
+        rod_com = obj_after_drop + ROD_COM_OFFSET * rod_axis
         drop_xy_error = float(np.linalg.norm(rod_com[:2] - car2_pos[:2]))
         drop_tilt_deg = float(
             np.rad2deg(np.arccos(min(1.0, abs(float(rod_axis[2])))))
@@ -2722,7 +2715,7 @@ class DualCarMission:
         car2_final, _ = self.car2.pose()
         obj_final = self.io.perception.object_truth()
         # 同样用质心判：筷子在桶里是斜靠着的，粗端原点离桶心固定差半个杆长。
-        final_com = obj_final + BUCKET_ROD_COM_Y * held_rod_axis()
+        final_com = obj_final + ROD_COM_OFFSET * held_rod_axis()
         final_xy_error = float(
             np.linalg.norm(final_com[:2] - car2_final[:2])
         )
@@ -2794,9 +2787,8 @@ def initialize_mission(seed: int | None) -> tuple[
 异常：
     200 次采样仍无法找到远离障碍物的目标时抛 RuntimeError。
 副作用：
-    覆盖全局 DATA 状态和 SIM_TRUTH_TARGET，并设置两车初始位姿。
+    覆盖全局 DATA 状态并设置两车初始位姿。
 重要性等级：A"""
-    global SIM_TRUTH_TARGET
     arm, finger = base.setup_initial_state()
 
     car1 = CarController(
@@ -2881,7 +2873,6 @@ def initialize_mission(seed: int | None) -> tuple[
     base.DATA.ctrl[:] = 0.0
     mujoco.mj_forward(base.MODEL, base.DATA)
 
-    SIM_TRUTH_TARGET = target.copy()
     arm.q_hold = base.CARRY_Q.copy()
     arm.hold()
     finger.target = base.FINGER_OPEN

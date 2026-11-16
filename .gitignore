@@ -16,6 +16,7 @@ models/**/*.png
 
 # Local logs
 *.log
+*.err
 
 # Editors and OS metadata
 .vscode/

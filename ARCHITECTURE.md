@@ -12,10 +12,10 @@
 
 **最终目标**：基于多模态感知（雷达 + 深度相机）的核电应急机器人运动控制 Sim2Real 闭环验证。
 
-**当前边界（v1.0.0 仿真基线，tag `v1.0.0`）**：
+**当前边界（`master`；冻结基线是 tag `v1.0.0`，之后被操作对象换成不锈钢监测棒、屏蔽桶换成 Ø240 圆筒）**：
 
 - 已实现：双车协同全流程仿真（雷达避障 → 视觉识别 → 侧面抓取 → 动态停靠 → 协同投放 → 倒车脱离 → 精准返航），75 kg 真实参数重载底盘，21 个随机种子的可回归验收。
-- 未实现：真机驱动、ROS 2 节点、手眼标定、实车参数辨识。
+- 未实现：真机驱动、手眼标定、实车参数辨识；ROS 2 节点骨架已生成但未构建、未入库。
 
 ## 3. 跨端协作环境
 
@@ -41,11 +41,11 @@ mobile_manipulator/
 ├─ robot_interface.py       # 抽象层：Clock / Chassis / Arm / Gripper / Perception / RobotIO（不含 MuJoCo）
 ├─ dual_car_scene.xml       # 主场景（30×30 m、红线、绿框、两车装配）
 ├─ arm_ik_scene.xml         # 固定基座 IK 场景
-├─ models/                  # UR10e 复合模型（assets 由 scripts/fetch_models.py 下载，不入库）
+├─ models/                  # UR10e 复合模型 + 监测棒网格（chopstick.obj 入库，Menagerie 的 assets 由脚本下载）
 ├─ scripts/                 # fetch_models.py / run_matrix.py / compare_metrics.py
-├─ ros2_ws/src/             # 阶段 1 ROS 2 骨架：mm_msgs / mm_sim / mm_mission / mm_perception / mm_bringup
+├─ ros2_ws/src/             # 阶段 1 ROS 2 骨架（本地已生成，尚未构建、尚未入库）
 ├─ docs/screenshots/        # README 配图
-└─ reports/                 # regression.csv（入库）+ logs/（本地忽略）
+└─ reports/                 # regression.csv + baselines/（入库）、logs/（本地忽略）
 ```
 
 ## 5. 核心模块职责
@@ -58,7 +58,7 @@ mobile_manipulator/
 | 路径控制 | `PathFollower` | 纯追踪 + 雷达局部避障 + 终点直行 + 低速掉头；横向容差与超时保护 | CarController |
 | 转向控制 | `SkidTurnFollower` | 差速原地转（方向锁存、越界即停、可选轮速斜坡） | CarController |
 | 倒车控制 | `ReverseStraightFollower` | 锁车道 + 前轮转角保持的直线倒车，后向净空限速 | CarController |
-| 感知 | `get_camera_data / detect_yellow_target / pixel_to_world / process_camera_frame` | D435i 四层视觉：取图 → HSV 分割 → 针孔反投影 → 外参变换 | mujoco.Renderer |
+| 感知 | `get_camera_data / depth_to_world / detect_steel_target / process_camera_frame` | D435i 深度视觉四层：取图 → 反投影点云 → 地平面拟合与离地分割 → PCA 定轴、凭两端高差判粗端 | mujoco.Renderer |
 | 机械臂 | `ArmMotion`（经 `SimArm` 暴露） | 关节目标下发 + 平滑插值 + 重力补偿；IK 用 mink 且以当前关节角为种子 | mink |
 | 夹爪 | `FingerMotion`（经 `SimGripper` 暴露） | 单执行器开合插值（0 开 / 255 闭） | base |
 | 任务 | `DualCarMission` | 七阶段状态机、并发调度（`run_*_concurrent`）、指标采集与验收判据 | RobotIO |
@@ -70,11 +70,11 @@ mobile_manipulator/
 
 ```
 阶段1 起点
-  └─阶段2 CAR1 雷达避障 → 观察点(Y≈18.4)
-      └─阶段3 D435i 取图识别放射源 → 通知 CAR2 出发 → CAR1 逼近目标正南 0.85 m
+  └─阶段2 CAR1 雷达避障 → 观察点(Y≈18.4) 粗定位
+      └─阶段3 D435i 精定位：先开到 1.41 m 测量位再采一帧 → 通知 CAR2 出发 → CAR1 逼近目标正南 0.85 m
           └─阶段4 CAR1 侧向抓取（接近/下探/闭合/提升/收回），CAR2 并行动态停靠
               └─阶段5 停靠检查（车身投影在绿框外、中心距 ≥ 0.82 m）
-                  └─阶段6 协同投放 → 两车错时倒车退出 Y=17.5
+                  └─阶段6 协同投放（质心对桶心 + 桶口上方 6 cm 自由落体）→ 两车错时倒车退出 Y=17.5
                       └─阶段7 正向返航 → 验收（入桶、回位、零接触）
 ```
 
@@ -119,7 +119,10 @@ DualCarMission.metrics（逐阶段 dict）
 | 二号车停靠中心 Y | 20.06 m（绿框下边界 -0.64） | 车身任意朝向投影 ≤0.578 m，留 0.06 m 余量 |
 | 抓取前摆正阈值 | 12° | 补 3° 的原地转要滑 14 mm，代价大于收益 |
 | 目标区 / 放射源散布 | 0.70×0.60 m；杆原点 X −0.269~+0.100、Y 20.78–21.22 | UR10e 臂展 1.3 m，抓取点 0.94 m（72%）；区间按 202 mm 杆的两端半长从搜索窗内缩，保证整根杆不出界 |
-| 落桶容差 | 0.05 m | 实测杆质心偏差 1~8 mm，留 6 倍余量 |
+| 监测棒 | Ø6×33 + Ø5×169，总长 0.202 m，33.5 g，质心距 body 原点 79 mm | 质心偏移由模型惯性参数读出，投放按质心对准桶心 |
+| 屏蔽桶 | 内径 Ø240、内深 240（外高 260）、底厚 20 mm | 桶口必须大于杆长，否则水平杆必然横架在桶沿上 |
+| 投放松爪高度 | 桶口上方 0.06 m | 杆整根自由落体到底，不碰桶沿 |
+| 落桶容差 | 0.05 m | 实测杆质心偏差 2~8 mm，留 6 倍余量 |
 
 ## 9. 回归与验收
 
@@ -134,13 +137,15 @@ DualCarMission.metrics（逐阶段 dict）
 | 前轮转向节是等效机构 | 控制器用"转角 + 轮速差"，非纯差速 | 重写横摆控制并重新标定 |
 | 雷达检测 2.8 m < 制动 3.5 m | 未联合标定 | 真机前做速度-距离标定 |
 | 摩擦/静摩擦门限为仿真整定值 | 未做真机辨识 | 直线/原地转/坡道三组试验回填 |
-| 视觉是渲染图 + HSV | 无真机标定与去噪 | 换相机驱动 + 手眼标定 |
+| 视觉是渲染深度图 + 地平面拟合 | 用反投影深度做离地分割，无真机标定与去噪 | 换相机驱动 + 手眼标定 + 深度尺度标定 |
 | 控制器仍直接读仿真时钟 | `PathFollower` 等内部用 `base.DATA.time` | 注入 `Clock`（下一阶段） |
 
 ## 11. 变更记录
 
 | 时间 | 内容 |
 |---|---|
-| 2026-11-08 | 阶段 1 骨架：`ros2_ws/src` 下三节点（sim_bridge / mission / target_localizer）+ `/clock` 帧同步 + launch，设计见 `docs/ros2_stage1_design.md` |
+| 2026-11-16 | 盘点清理：删除 3 张过期截图（旧圆柱/旧桶）、6 个从未被引用的模块级常量与若干过期注释；质心偏移改为从模型惯性参数读取 |
+| 2026-11-09 | 被操作对象改为不锈钢监测棒（Ø6×33 + Ø5×169、202 mm、33.5 g）、屏蔽桶改 32 边圆筒（内径 Ø240）、投放改纯重力落桶；采样区间按杆的两端半长从视觉搜索窗内缩；末段直行增加"车头延长线压到终点"判据 |
+| 2026-11-08 | 阶段 1 骨架：`ros2_ws/src` 下三节点（sim_bridge / mission / target_localizer）+ `/clock` 帧同步 + launch，设计见 `docs/ros2_stage1_design.md`（尚未入库） |
 | 2026-11-08 | 阶段 0：抽出 `robot_interface.py` 与 `Sim*` 适配器，任务层只依赖 `RobotIO`；视觉等待改同步（回归可复现）；删除 247 行死代码；新增 `compare_metrics.py` |
 | 2026-11-08 | v1.0.0 基线冻结（tag `v1.0.0`），补 MIT 协议与 README 徽章 |
