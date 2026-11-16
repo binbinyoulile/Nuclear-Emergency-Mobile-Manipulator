@@ -151,7 +151,7 @@
 | 服务 | 类型 | 调用 → 提供 | 用途 |
 |---|---|---|---|
 | `/car1/camera/capture` | `std_srvs/Trigger` | mission → sim | 触发一帧离屏渲染并发布图像（真机换成相机触发/取流） |
-| `/car1/arm/solve_ik` | `mm_msgs/SolveIK` | mission → sim | 基座坐标系位姿 → 关节角 + 残差 |
+| `/car1/arm/solve_ik` | `mm_msgs/SolveIK` | mission → sim | 世界坐标 + 工具姿态（固定基座系）→ 关节角 + 残差 |
 | `/sim/snapshot` | `mm_msgs/Snapshot` | mission → sim | 保存关键帧截图（仅 `--snapshot`） |
 
 **不引入 action**：阶段 1 的运动执行都在任务层或驱动内部完成，没有"长时间目标 + 反馈 + 结果"的语义需求。
@@ -185,7 +185,8 @@ MissionStatus.msg    string stage
                      bool   done, ok
                      float64 sim_time        # s
 
-SolveIK.srv          geometry_msgs/Point target  # map 坐标系；姿态统一用固定抓取姿态
+SolveIK.srv          geometry_msgs/Point target            # map 坐标系
+                     geometry_msgs/Quaternion orientation  # 固定基座坐标系，wxyz
                      ---
                      float64[6] joint_positions
                      float64 position_error     # m

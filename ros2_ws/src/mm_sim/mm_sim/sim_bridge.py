@@ -286,7 +286,11 @@ class SimBridge(Node):
     # 服务
     # ------------------------------------------------------------------
     def _on_solve_ik(self, request, response):
-        """世界坐标 → 固定基座坐标系 → mink 逆解（与单进程实现的换算完全一致）。"""
+        """世界坐标 + 工具姿态 → 固定基座坐标系 → mink 逆解（与单进程实现完全一致）。
+
+        姿态必须随请求下发：抓取要求工具绕自身 Z 轴转 ±90° 才能横跨杆身，写死成
+        TARGET_QUAT（0°）时两指会沿杆长方向闭合，抓取必然夹空——虽然不报任何错。
+        """
         target_world = np.array(
             [request.target.x, request.target.y, request.target.z], dtype=float
         )
@@ -295,9 +299,22 @@ class SimBridge(Node):
             @ self._arm_base_rot.T
             @ (target_world - self._arm_base_pos)
         )
-        q, err = self._base.solve_ik_fixed(
-            local, self._base.TARGET_QUAT, seed_q=self._arm_q.copy()
+        quat = np.array(
+            [
+                request.orientation.w,
+                request.orientation.x,
+                request.orientation.y,
+                request.orientation.z,
+            ],
+            dtype=float,
         )
+        norm = float(np.linalg.norm(quat))
+        if norm < 1e-6:
+            # 全零 = "用任务约定的竖直下压姿态"，兼容只给位置的老客户端
+            quat = np.asarray(self._base.TARGET_QUAT, dtype=float)
+        else:
+            quat = quat / norm
+        q, err = self._base.solve_ik_fixed(local, quat, seed_q=self._arm_q.copy())
         response.joint_positions = [float(v) for v in q]
         response.position_error = float(err)
         return response

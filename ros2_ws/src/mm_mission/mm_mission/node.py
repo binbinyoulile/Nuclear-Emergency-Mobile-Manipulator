@@ -21,7 +21,7 @@ import time
 
 import numpy as np
 import rclpy
-from geometry_msgs.msg import Point, PoseStamped
+from geometry_msgs.msg import Point, PoseStamped, Quaternion
 from nav_msgs.msg import Odometry
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
@@ -80,8 +80,11 @@ class MissionNode(Node):
     def __init__(self) -> None:
         super().__init__("mm_mission")
         self.declare_parameter("frame_dt", 0.02)
-        self.declare_parameter("frame_timeout", 5.0)
-        self.declare_parameter("ready_timeout", 30.0)
+        # 墙钟超时按"慢机器"给：虚拟机降速时场景导入要 30 s 级，5 s 的帧超时会把正常运行
+        # 判成失败（实测同机 2~6 倍降速时冒烟连挂 3 次，用时放宽即通过）。不会掩盖真故障：
+        # 仿真真死了照样超时报错。
+        self.declare_parameter("frame_timeout", 15.0)
+        self.declare_parameter("ready_timeout", 60.0)
         self.declare_parameter("estimate_timeout", 5.0)
         self.declare_parameter("seed", -1)
         self.declare_parameter("mode", "mission")
@@ -409,11 +412,17 @@ class MissionNode(Node):
         except Exception:  # noqa: BLE001 - 服务端异常/取消一律按失败处理
             return None
 
-    def solve_ik_world(self, point: np.ndarray) -> tuple[np.ndarray, float]:
-        """世界坐标 → 关节角（驱动侧逆解）。"""
+    def solve_ik_world(
+        self, point: np.ndarray, orientation: np.ndarray
+    ) -> tuple[np.ndarray, float]:
+        """世界坐标 + 固定基座系工具姿态（wxyz）→ 关节角（驱动侧逆解）。"""
         request = SolveIK.Request()
         request.target = Point(
             x=float(point[0]), y=float(point[1]), z=float(point[2])
+        )
+        quat = np.asarray(orientation, dtype=float)
+        request.orientation = Quaternion(
+            w=float(quat[0]), x=float(quat[1]), y=float(quat[2]), z=float(quat[3])
         )
         response = self._call_service(self._ik_client, request, 5.0)
         if response is None:

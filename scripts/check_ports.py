@@ -46,18 +46,20 @@ class _StubNode:
 
 
 class _ArmStubNode:
-    """只实现 `start_fixed` 换算链需要的节点方法，并记录最终下发的世界目标。"""
+    """只实现 `start_fixed` 换算链与姿态透传需要的节点方法，并记录收到的请求。"""
 
     def __init__(self, base_pos: np.ndarray, base_rot: np.ndarray) -> None:
         self._base_pos = base_pos
         self._base_rot = base_rot
         self.world_target: np.ndarray | None = None
+        self.quat: np.ndarray | None = None
 
     def arm_base_to_world(self, point):
         return self._base_pos + self._base_rot @ np.asarray(point, dtype=float)
 
-    def solve_ik_world(self, point):
+    def solve_ik_world(self, point, orientation):
         self.world_target = np.asarray(point, dtype=float).copy()
+        self.quat = np.asarray(orientation, dtype=float).copy()
         return np.zeros(6), 0.0
 
     def arm_joint_positions(self):
@@ -177,12 +179,41 @@ def check_start_fixed_chain() -> list[str]:
     return []
 
 
+def check_orientation_passthrough() -> list[str]:
+    """确认 `RosArm` 把工具姿态原样送到逆解服务。
+
+    抓取要求工具绕自身 Z 轴转 ±90° 才能横跨杆身。姿态一旦在适配器里被丢掉，抓取不会
+    报错——夹爪照常闭合、力也有读数（1.5 N，比空夹的 0.2~0.6 N 还高），但杆一根都不会
+    被拿起来。单进程实测：强制 0° 时 `finger force=12.00 N`、杆原地不动、任务在 4_grasp
+    失败；正常 ±90° 时力 5.10 N、杆被抬到 0.84 m。所以这条必须钉住。
+    """
+    from mm_mission.adapters import RosArm  # noqa: PLC0415
+
+    # q_base * Rz(90°)：任务层实际会下发的四个候选之一
+    half = 2.0**-0.5
+    quat = np.array([0.0, half, 0.0, half])
+    node = _ArmStubNode(np.zeros(3), np.eye(3))
+    arm = RosArm(node, None)
+    point = np.array([1.0, 2.0, 3.0])
+
+    arm.start_world(point, 1.0, quat)
+    if node.quat is None or not np.allclose(node.quat, quat, atol=1e-12):
+        return [f"start_world 没有把工具姿态送到逆解服务（收到 {node.quat}）"]
+
+    node.quat = None
+    arm.solve_ik(point, quat)
+    if node.quat is None or not np.allclose(node.quat, quat, atol=1e-12):
+        return [f"solve_ik 没有把工具姿态送到逆解服务（收到 {node.quat}）"]
+    return []
+
+
 def main() -> int:
     failures = []
     for name, check in (
         ("ROS 适配器", check_ros_adapters),
         ("仿真适配器", check_sim_adapters),
         ("start_fixed 换算链", check_start_fixed_chain),
+        ("工具姿态透传", check_orientation_passthrough),
     ):
         try:
             problems = check()

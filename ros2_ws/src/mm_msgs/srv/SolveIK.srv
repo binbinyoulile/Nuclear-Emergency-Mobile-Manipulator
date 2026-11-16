@@ -1,7 +1,10 @@
 # 固定基座逆解。真机侧对应 ur_robot_driver 的 get_inverse_kin。
-# 请求点在世界坐标系（map）下给出，姿态统一使用固定抓取姿态：
-# 本阶段所有抓取都要求工具 +Y 朝下，单独传姿态只会多一条没人用的字段。
+# target 在世界坐标系（map）下给出；orientation 是**固定基座坐标系**（arm_ik_scene.xml
+# 的 base 体）下的工具姿态四元数 wxyz，与单进程 solve_ik_fixed 的第二个参数同义。
+# 抓取时工具要绕自身 Z 轴转 ±90° 才能横跨杆身（0° 时两指沿杆长方向闭合，必然夹空），
+# 所以姿态必须随请求下发，不能由驱动侧写死。
 geometry_msgs/Point target
+geometry_msgs/Quaternion orientation
 ---
 float64[6] joint_positions   # 六个关节角，rad
 float64 position_error       # 末端位置残差，m

@@ -172,8 +172,7 @@ class RosArm(ArmInterface):
     ``start_world`` 直接吃世界坐标；``start_fixed`` 的入参是**固定基座坐标系**
     （与单进程的 ``solve_ik_fixed`` 同一个系，即 ``arm_ik_scene.xml`` 的 base 体），
     它和 TF 的 ``car1/arm_base_link`` 差一个 ``mission_core.FIXED_BASE_ROT``，
-    换算顺序见 ``start_fixed``。姿态参数本阶段不生效
-    （桥的逆解服务固定用 TARGET_QUAT，真机接 servoj 时再启用）。
+    换算顺序见 ``start_fixed``。工具姿态一律随请求下发（见 ``start_world``）。
     """
 
     def __init__(self, node, clock: RosClock) -> None:
@@ -204,8 +203,20 @@ class RosArm(ArmInterface):
         self.start_world(target_world, duration, target_quat)
 
     def start_world(self, target_pos_world, duration, target_quat=None) -> None:
-        del target_quat  # 姿态由驱动侧的逆解服务固定，见类文档
-        q_ik, error = self._node.solve_ik_world(np.asarray(target_pos_world, float))
+        """世界坐标目标位置 → 逆解服务；工具姿态原样随请求下发。
+
+        ``target_quat`` 是固定基座坐标系（wxyz）。**不能丢**：抓取要求工具绕自身 Z 轴
+        转 ±90° 才能横跨杆身，退回 0° 会让两指沿杆长方向闭合，夹爪照常闭合、力也有读数，
+        但杆一根都不会被拿起来（实测单进程强制 0° 复现：力 12 N、杆原地不动）。
+        """
+        quat = (
+            mission_core.TARGET_QUAT
+            if target_quat is None
+            else np.asarray(target_quat, dtype=float)
+        )
+        q_ik, error = self._node.solve_ik_world(
+            np.asarray(target_pos_world, dtype=float), quat
+        )
         if error > 0.02:
             raise RuntimeError(f"IK 残差过大：{error * 1000:.1f} mm，目标不可达")
         self._traj = JointTrajectory(self.joint_positions(), q_ik, duration)
@@ -235,9 +246,17 @@ class RosArm(ArmInterface):
         return self._node.tf_position("car1/pinch")
 
     def solve_ik(self, pos_world, target_quat=None) -> tuple[np.ndarray, float]:
-        # 统一使用固定抓取姿态，姿态参数本阶段不生效
-        del target_quat
-        return self._node.solve_ik_world(np.asarray(pos_world, dtype=float))
+        """世界坐标 + 工具姿态 → (关节角, 残差)。
+
+        姿态要真的用上：`choose_grasp_spin` 就是靠比较不同自旋角的残差与舒适度来选抓取
+        姿态的，姿态一被忽略，所有候选的分数都一样，选择就退化成"永远取第一个"。
+        """
+        quat = (
+            mission_core.TARGET_QUAT
+            if target_quat is None
+            else np.asarray(target_quat, dtype=float)
+        )
+        return self._node.solve_ik_world(np.asarray(pos_world, dtype=float), quat)
 
 
 class RosGripper(GripperInterface):
