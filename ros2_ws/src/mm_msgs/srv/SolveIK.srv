@@ -3,6 +3,10 @@
 # 的 base 体）下的工具姿态四元数 wxyz，与单进程 solve_ik_fixed 的第二个参数同义。
 # 抓取时工具要绕自身 Z 轴转 ±90° 才能横跨杆身（0° 时两指沿杆长方向闭合，必然夹空），
 # 所以姿态必须随请求下发，不能由驱动侧写死。
+#
+# 约定：orientation 全零（‖q‖ < 1e-6）= 沿用任务约定的竖直下压姿态，与客户端不传姿态时
+# 行为相同——即"老客户端只给 target"和"新客户端给 TARGET_QUAT"落到同一个解。驱动侧按此
+# 实现（sim_bridge._on_solve_ik 会归一化并把零四元数替换成任务默认姿态）。
 geometry_msgs/Point target
 geometry_msgs/Quaternion orientation
 ---

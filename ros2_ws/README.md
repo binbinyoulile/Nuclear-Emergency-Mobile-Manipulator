@@ -112,12 +112,18 @@ ros2 run tf2_ros tf2_echo map car1/pinch
   `car1/arm_base_link` 不等于"固定基座坐标系"：`arm_ik_scene.xml` 的 base 体相对底盘臂座
   转了 180°（`mission_core.FIXED_BASE_ROT`），`ArmInterface.start_fixed` 的入参是后者。
   这条链路错了不会报错——残差照样几毫米，机械臂只是走到镜像位置。
-  `scripts/check_ports.py` 的第 3 项就是钉这个往返。
+  `scripts/check_ports.py` 的第 3 项就是钉这个往返，第 4 项钉"工具姿态真的送到逆解服务"。
+  **两项都做过 FAIL→OK 的反向验证**（第 3 项去掉 `.T`、第 4 项把姿态换成默认值），
+  不是写完就摆在那里的死代码。
 - **工具姿态必须随请求走**：`SolveIK.srv` 的 `orientation` 是固定基座系四元数，由
   `RosArm.start_world`/`solve_ik` 原样透传。抓取要求工具绕自身 Z 轴转 ±90° 才能横跨
   杆身，退回 0° 时夹爪照常闭合、力也有读数（0.95~1.62 N，比空夹的 0.2~0.6 N 还高），
   但杆一根都不会被拿起来，任务卡在 `4_grasp`。**最早的判据是
   `finger force after close`：真正夹住约 5 N，夹空是 1 N 量级。**
+- **超时参数是环境宽容度，不是判据**：`frame_timeout` 5→15 s、`ready_timeout` 30→60 s。
+  实测同一台虚拟机出现过 2~6 倍降速（场景导入 3 s→31 s、控制帧 30 ms→88 ms），5 s 的帧超时
+  会把**正常运行**判成失败；放宽后真故障照样超时（桥真死了 15 s 必然没有 `/clock`），
+  而任务成功率、物理判据带一个字都没动。调这个参数不影响任何验收结论。
 - **验证状态**：任务层拆分后单进程轨道 A 复跑 `seed 0-20`，与重构前基线逐位一致；
   ROS 轨道 B（21 种子）等在 Ubuntu 上跑（首次运行暴露的 TF 父帧、`start_fixed` 坐标系、
   工具姿态丢失三处错误已修，见共享区 README 的编译记录）。
@@ -148,7 +154,7 @@ seed 6 实测一次）：
 | | `max_frames` | `0` | 跑满多少帧后退出，0 表示一直跑 |
 | `mm_mission` | `frame_dt` | `0.02` | 控制帧时长，与仿真保持一致 |
 | | `mode` | `mission` | `mission` = 七阶段正式任务；`smoke` = 阶段 1 端到端冒烟 |
-| | `frame_timeout` | `15.0` | 等 `/clock` 的墙钟超时（虚拟机降速时 5 s 会误判） |
+| | `frame_timeout` | `15.0` | 等 `/clock` 的墙钟超时 |
 | | `ready_timeout` | `60.0` | 等首帧状态的超时（场景导入在慢机器上要 30 s 级） |
 | | `seed` | `-1` | 只用于指标，场景随机化在仿真侧 |
 | `mm_target_localizer` | `roi_x_min` / `roi_x_max` | `-0.30` / `0.30` | 搜索窗 X 范围（map 系），默认对齐绿框内缩 5 cm |
