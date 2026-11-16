@@ -7,6 +7,7 @@
 <img alt="mink" src="https://img.shields.io/badge/IK-mink%201.3.0-7b61ff?style=for-the-badge" />
 <img alt="opencv" src="https://img.shields.io/badge/OpenCV-5.0.0-5C3EE8?style=for-the-badge&logo=opencv&logoColor=white" />
 <img alt="regression" src="https://img.shields.io/badge/seed_0--20-21%2F21%20passed-brightgreen?style=for-the-badge" />
+<img alt="ros2" src="https://img.shields.io/badge/ROS2-humble%20build%20passing-22314E?style=for-the-badge&logo=ros&logoColor=white" />
 <img alt="platform" src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux-lightgrey?style=for-the-badge&logo=windows&logoColor=white" />
 
 </div>
@@ -139,7 +140,9 @@ mobile_manipulator/
 ├── scripts/run_matrix.py    # 多 seed 回归矩阵（CSV + 每 seed 日志）
 ├── scripts/compare_metrics.py  # 两份回归 CSV 逐指标对比
 ├── reports/                 # regression.csv（入库）、baselines/ 历史基线、logs/（本地忽略）
+├── ros2_ws/src/             # 阶段 1 ROS 2 骨架：mm_msgs / mm_sim / mm_mission / mm_perception / mm_bringup
 ├── docs/screenshots/        # 5 张核心展示截图
+├── docs/ros2_stage1_design.md  # 阶段 1 节点/话题/消息设计
 ├── requirements.txt
 ├── setup.ps1
 └── setup.sh
@@ -219,9 +222,26 @@ D:\Python313\python.exe .\scripts\run_matrix.py --seeds 0-20
 
 ## 版本与里程碑
 
-当前 `master` 在 v1.0.0 之上改掉了两处验收口径：被操作对象从 Ø20 mm 圆柱换成不锈钢监测棒，
-屏蔽桶从 Ø100 锥形口换成 Ø240 圆筒，投放回退为纯重力落桶。这一版回归 21/21、指标见上一节，
-尚未打 tag——顶部徽章标的是最新**冻结基线** v1.0.0，不是当前工作树。
+当前 `master` 已有两块：单进程仿真（`seed 0–20` 21/21，被操作对象换成不锈钢监测棒、屏蔽桶换成
+Ø240 圆筒）与阶段 1 的 ROS 2 三节点骨架（Humble 构建与冒烟通过）。都还没打新 tag——顶部
+`baseline` 徽章标的是最新**冻结基线** v1.0.0，不是当前工作树。
+
+### 阶段 1 — ROS 2 三节点骨架（2026-11-16）
+
+在 Ubuntu 22.04 + 原生 ROS 2 Humble 上 `colcon build --symlink-install` 一次通过，5 个包
+（`mm_msgs` / `mm_sim` / `mm_mission` / `mm_perception` / `mm_bringup`），未改任何
+`package.xml` / CMake。两轮冒烟：
+
+- **仿真侧**（`sim_only.launch.py max_frames:=500`）：`frames=500 指令超时=500 sim_time=10.00s`，
+  进程 clean exit；`500 × 0.02 = 10.00 s` 即 50 Hz 仿真帧率；`/car1/odom` 有数据，
+  TF 树含 `map → car1/base_link`、`car1/arm_base_link`、`car1/camera_link`。
+- **全链路**（`sim_mission.launch.py seed:=6`）：`stage=done ok=true`，车开到观测位
+  （`stance_error_m=0.103`）、感知给出**粗端中心**（`vision_error_mm=2.36`）、
+  `/perception/target` 的 `valid=true`、两车接触 0。
+
+设计见 [`docs/ros2_stage1_design.md`](docs/ros2_stage1_design.md)，运行说明见
+[`ros2_ws/README.md`](ros2_ws/README.md)。`mm_mission` 里目前跑的是冒烟序列，
+七阶段状态机是阶段 2 的工作。
 
 ### v1.0.0 — 仿真基线闭环（2026-11-07，tag `v1.0.0`）
 
@@ -254,6 +274,8 @@ D:\Python313\python.exe .\scripts\run_matrix.py --seeds 0-20
 - 雷达检测距离 2.8 m 小于 3.5 m 制动距离，限速与避障阈值还没有做联合标定。
 - 摩擦、静摩擦门限、接触参数仍是仿真整定值，未经真实轮胎辨识。
 - 视觉是渲染深度图 + 地平面拟合，真机需要标定（内外参、深度尺度）与去噪流程替换。
+- ROS 2 侧目前只有冒烟序列：七阶段状态机、三个路径控制器与 ROS 回归矩阵属于阶段 2；
+  `mm_mission` 的接口已经按最终形态收敛好，搬过去不需要改 `mm_sim` / `mm_msgs`。
 
 ## 跨平台路径
 

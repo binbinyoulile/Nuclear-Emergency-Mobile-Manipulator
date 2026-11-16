@@ -1,0 +1,26 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>mm_msgs</name>
+  <version>0.1.0</version>
+  <description>
+    双车协同移动操作臂的 ROS 2 接口定义：底盘轮速指令、雷达派生量摘要、
+    夹爪指令与状态、目标位姿估计、任务状态、逆解与截图服务。
+  </description>
+  <maintainer email="binbinyoulile@users.noreply.github.com">Haobin Zhu</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>rosidl_default_generators</buildtool_depend>
+
+  <depend>std_msgs</depend>
+  <depend>geometry_msgs</depend>
+
+  <exec_depend>rosidl_default_runtime</exec_depend>
+
+  <member_of_group>rosidl_interface_packages</member_of_group>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

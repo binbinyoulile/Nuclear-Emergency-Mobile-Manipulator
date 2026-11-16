@@ -14,8 +14,8 @@
 
 **当前边界（`master`；冻结基线是 tag `v1.0.0`，之后被操作对象换成不锈钢监测棒、屏蔽桶换成 Ø240 圆筒）**：
 
-- 已实现：双车协同全流程仿真（雷达避障 → 视觉识别 → 侧面抓取 → 动态停靠 → 协同投放 → 倒车脱离 → 精准返航），75 kg 真实参数重载底盘，21 个随机种子的可回归验收。
-- 未实现：真机驱动、手眼标定、实车参数辨识；ROS 2 节点骨架已生成但未构建、未入库。
+- 已实现：双车协同全流程仿真（雷达避障 → 视觉识别 → 侧面抓取 → 动态停靠 → 协同投放 → 倒车脱离 → 精准返航），75 kg 真实参数重载底盘，21 个随机种子的可回归验收；阶段 1 的三节点 ROS 2 骨架（`ros2_ws`）已在 Ubuntu 22.04 + 原生 Humble 上 `colcon build` 通过，冒烟两轮全过。
+- 未实现：真机驱动、手眼标定、实车参数辨识；ROS 侧的七阶段任务状态机（阶段 2）。
 
 ## 3. 跨端协作环境
 
@@ -43,7 +43,7 @@ mobile_manipulator/
 ├─ arm_ik_scene.xml         # 固定基座 IK 场景
 ├─ models/                  # UR10e 复合模型 + 监测棒网格（chopstick.obj 入库，Menagerie 的 assets 由脚本下载）
 ├─ scripts/                 # fetch_models.py / run_matrix.py / compare_metrics.py
-├─ ros2_ws/src/             # 阶段 1 ROS 2 骨架（本地已生成，尚未构建、尚未入库）
+├─ ros2_ws/src/             # 阶段 1 ROS 2 骨架：mm_msgs / mm_sim / mm_mission / mm_perception / mm_bringup（Humble 构建通过）
 ├─ docs/screenshots/        # README 配图
 └─ reports/                 # regression.csv + baselines/（入库）、logs/（本地忽略）
 ```
@@ -144,6 +144,7 @@ DualCarMission.metrics（逐阶段 dict）
 
 | 时间 | 内容 |
 |---|---|
+| 2026-11-16 | 阶段 1 构建验证：Ubuntu 22.04 + Humble 上 5 包 `colcon build --symlink-install` 一次通过；冒烟 A 500 帧 = 10.00 s 仿真时间，冒烟 B `vision_error_mm=2.36`；回填 3 个运行期修复（节点收尾顺序、`rosgraph_msgs/Clock` 导入、服务调用改 `call_async` 轮询、机械臂冒烟目标移到车头前 0.5 m）|
 | 2026-11-16 | 盘点清理：删除 3 张过期截图（旧圆柱/旧桶）、6 个从未被引用的模块级常量与若干过期注释；质心偏移改为从模型惯性参数读取 |
 | 2026-11-09 | 被操作对象改为不锈钢监测棒（Ø6×33 + Ø5×169、202 mm、33.5 g）、屏蔽桶改 32 边圆筒（内径 Ø240）、投放改纯重力落桶；采样区间按杆的两端半长从视觉搜索窗内缩；末段直行增加"车头延长线压到终点"判据 |
 | 2026-11-08 | 阶段 1 骨架：`ros2_ws/src` 下三节点（sim_bridge / mission / target_localizer）+ `/clock` 帧同步 + launch，设计见 `docs/ros2_stage1_design.md`（尚未入库） |

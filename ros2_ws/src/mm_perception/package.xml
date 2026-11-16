@@ -1,0 +1,26 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>mm_perception</name>
+  <version>0.1.0</version>
+  <description>
+    感知节点：订阅 D435i 深度图与内参，用"离地高度"几何特征分割不锈钢监测棒
+    （点云反投影 → 地平面拟合 → PCA 定轴 → 两端高差判粗端），输出**粗端中心**
+    的世界坐标；相机外参由 TF 给出。阶段 3 将换成真实相机与手眼标定。
+  </description>
+  <maintainer email="binbinyoulile@users.noreply.github.com">Haobin Zhu</maintainer>
+  <license>MIT</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>mm_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-opencv</exec_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
