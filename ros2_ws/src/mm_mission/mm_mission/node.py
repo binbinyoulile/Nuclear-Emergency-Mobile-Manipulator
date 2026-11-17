@@ -400,13 +400,23 @@ class MissionNode(Node):
 
         rclpy Humble 的 ``Client.call()`` 没有 ``timeout_sec`` 参数（传了直接 TypeError），
         所以自己用 ``call_async`` 等 future；调用方把 ``None`` 当超时处理。
+
+        等待期间继续推进仿真帧并补发两车轮速（与 ``request_estimate`` 同一做法）。否则
+        任务线程阻塞时桥等不到指令、只能按旧指令推进：慢虚拟机上逆解一次 1~2 s，累计
+        可达数秒（实测 234~601 帧，占全流程 8%），既让收尾日志的 ``指令超时`` 失去判别力，
+        也破坏"仿真只由任务层驱动"这个不变量。
         """
         future = client.call_async(request)
         deadline = time.monotonic() + timeout
         while not future.done():
             if time.monotonic() > deadline:
                 return None
-            time.sleep(0.005)
+            try:
+                self.wait_next_frame()
+                self.flush_wheel_commands()
+            except TimeoutError:
+                # /clock 没来：不在这里放大错误，交给上面的 deadline 兜底
+                time.sleep(0.005)
         try:
             return future.result()
         except Exception:  # noqa: BLE001 - 服务端异常/取消一律按失败处理
