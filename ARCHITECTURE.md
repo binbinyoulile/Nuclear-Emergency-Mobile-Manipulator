@@ -153,7 +153,7 @@ DualCarMission.metrics（逐阶段 dict）
 | 限制 | 现状 | 迁移动作 |
 |---|---|---|
 | 前轮转向节是等效机构 | 控制器用"转角 + 轮速差"，非纯差速 | 重写横摆控制并重新标定 |
-| 雷达检测 2.8 m < 制动 3.5 m | 未联合标定 | 真机前做速度-距离标定 |
+| 雷达检测 2.8 m < 制动 3.5 m | 已按 2.0 m/s 巡航把制动距离压到约 1.5 m | 真机换轮胎/载荷后复核 |
 | 摩擦/静摩擦门限为仿真整定值 | 未做真机辨识 | 直线/原地转/坡道三组试验回填 |
 | 视觉是渲染深度图 + 地平面拟合 | 用反投影深度做离地分割，无真机标定与去噪 | 换相机驱动 + 手眼标定 + 深度尺度标定 |
 | ROS 侧姿态参数未接通 | 逆解服务固定竖直下压姿态，工具朝向由 `TARGET_QUAT` 决定 | 真机接 servoj 时把姿态并入 SolveIK 请求 |
@@ -162,6 +162,8 @@ DualCarMission.metrics（逐阶段 dict）
 
 | 时间 | 内容 |
 |---|---|
+| 2026-11-17 | 速度按真机口径定档并把绕行方向改成带记忆：巡航 `6.5 → 2.0 m/s`、持杆/接近 `1.2 → 1.0`、入位 `0.8/0.55 → 0.5`、加减速 `4.5/6.0 → 1.5/2.0 m/s²`。依据是雷达只看到 2.8 m 而 6.5 m/s 要 3.5 m 制动、且横摆限幅 1.5 rad/s 跟不上该速度下的转向需求（实测 5 m/s 时航向误差 0.45 rad 需要 3.1 rad/s）。同时把绕行方向加 1.5 s 记忆：ROS 侧二号车卡死的日志里"发现 0.27 m 障碍 → 左绕 → 已清"刷 65 次，实际是左右交替翻转导致净位移为零。新增"原地磨"告警（距航点远且无前进速度持续 1 s）。单进程 21/21，单次仿真 59.6 → 69.9 s，新基线 `reports/baselines/real_speed.csv` | 
+| 2026-11-17 | 落桶判据从"质心离桶心 ≤0.05 m"改为几何包含（`rod_inside_bucket`：杆两端都在桶口内接圆内、低于桶沿、高于桶底）。质心容差是照"杆横躺"一种姿态定的代理量，而 ROS 侧松手瞬间杆会被甩成竖直落入（倾角 1.4~21°），同一条容差对两种姿态自相矛盾——出现"杆明明在桶里却判负"。对横躺反而更严：质心允许偏移 50 mm → 约 18 mm。单进程 21/21 且与旧基线逐位一致（1e-9），说明只改判定、没动物理 | 
 | 2026-11-16 | 修轨道 B 第二个运行期错误：`RosArm` 把工具姿态丢了（`del target_quat` + 逆解服务写死 `TARGET_QUAT`），而抓取要求工具绕自身 Z 轴转 ±90° 才能横跨杆身，全部种子卡在 `4_grasp`（`car1 failed to grasp the target rod`，力 0.95~1.62 N、杆原地不动）。单进程强制 0° 复现了同一现象（力 12.00 N、杆不动），正常 ±90° 是 5.10 N 且杆被抬到 0.84 m；`choose_grasp_spin` 也因此退化成"永远取第一个候选"。修法：`SolveIK.srv` 增 `geometry_msgs/Quaternion orientation`（固定基座系），`RosArm.start_world`/`solve_ik` 原样透传，桥按请求姿态逆解；`scripts/check_ports.py` 增加第 4 项"工具姿态透传"（已验证丢掉姿态时会 FAIL）。顺带把 `frame_timeout` 5→15 s、`ready_timeout` 30→60 s，避免虚拟机降速时把正常运行判成失败 |
 | 2026-11-16 | 修轨道 B 首次运行暴露的两个坐标系错误：①桥把 `car1/arm_base_link`、`car1/pinch` 的世界坐标挂在车体/臂座父帧下，TF 合成后世界目标偏 ~20 m，任务卡在 `4_grasp`（IK 残差 18.7 m）——改为 `_send_world_tf()`，父帧固定 `map`，不再开放 parent 参数；②`RosArm.start_fixed` 把固定基座系目标直接当臂座系用，少了 `FIXED_BASE_ROT = diag(-1,-1,1)` 的 180°（`arm_ik_scene.xml` 的 base 体旋转），机械臂会安静地走到镜像位置（残差 1.65 mm 看不出来）——常数移入 `mission_core` 并由单进程入口用模型复核，`scripts/check_ports.py` 增加"ROS 与单进程 `start_fixed` 落到同一 IK 目标"的往返检查 |
 | 2026-11-16 | 阶段 2 任务层拆分：`DualCarMission` + 三个路径控制器 + `run_*_concurrent` + 抓取/投放编排 + 任务常量移到零 MuJoCo 的 `mission_core.py`，单进程与 ROS 共用一份；端口扩 `LidarInterface`、`ArmInterface.start_world/tool_position`、`PerceptionInterface.estimate_target/object_pose`，`RobotIO.viewer` 换成每帧渲染回调 `frame_hook`；桥补 `/sim/object_pose`、`car1/pinch` TF、`/car1/lidar/ignore_peer`；launch 给任务节点加 `on_exit=Shutdown()`（否则桥常驻、下一次启动出现两条 `/clock`）；顺手删掉从未被调用的相机参数搜索与死参数 |

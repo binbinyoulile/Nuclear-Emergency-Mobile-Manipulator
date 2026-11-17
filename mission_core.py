@@ -56,6 +56,11 @@ CHASSIS_SETTLE_TIME = 1.2
 # 路径跟随参数。V_MAX 是限幅上限，实际速度由各段 max_speed 决定。
 V_MAX = 20.0
 K_POS = 3.50
+# 纵向加减速度上限（m/s²）。原来 4.5/6.0 是配合 6.5 m/s 仿真巡航的；真机按 2.0 m/s
+# 巡航、1.5 m/s² 舒适制动（2.0 m/s 的制动距离 1.33 m + 0.1 s 扫描 0.2 m ≈ 1.5 m，
+# 雷达 2.8 m 留一倍余量）。见 README「已知限制」里的速度—检测距离标定说明。
+ACCEL_UP = 1.5
+ACCEL_DOWN = 2.0
 COMMAND_RAMP = 0.35
 # 路径跟随允许的最大横摆角速度，单位 rad/s。
 # 纯追踪本身不限幅：5.3 m/s 时它会要求 7.6 rad/s，左右轮速差约 ±29 rad/s，实测直接
@@ -202,6 +207,15 @@ LIDAR_PERIOD = 0.10
 # "速度—检测距离"联合标定，因此这里暂不单独修改。
 LIDAR_DETECT_RANGE = 2.8
 LIDAR_FRONT_HALF = np.deg2rad(30.0)
+# 绕行方向记忆：同一障碍的反复重入不再重新选边。ROS 侧二号车卡死时日志里
+# "发现 0.27 m 障碍 → 左绕 → 已清" 刷了 65 次，而实际左右在交替翻转
+# （1.6 s 内 LEFT→RIGHT→LEFT），车头左右摆、净位移为零。1.5 s 足够覆盖
+# 帧级闪烁的周期，又短到换一个新障碍时会重新判断。
+AVOID_SIDE_HOLD = 1.5
+# 卡死告警：距航点还很远却没有前进速度，打一行日志，不用等 waypoint 超时。
+STALL_WARN_TIME = 1.0
+STALL_WARN_ERR = 0.5
+STALL_WARN_SPEED = 0.02
 LIDAR_SIDE_MAX = np.deg2rad(90.0)
 LIDAR_REAR_HALF = np.deg2rad(30.0)
 
@@ -302,6 +316,10 @@ class PathFollower:
         self.avoid_side = 0
         self.avoid_start = 0.0
         self.avoid_stop_until = 0.0
+        self._side_memo = 0.0
+        self._side_memo_until = 0.0
+        self._stall_since: float | None = None
+        self._stall_warned = False
         self._pivot_dir = 0.0
         self.speed_cmd = 0.0
         self.frame_dt = float(clock.dt)
@@ -441,14 +459,21 @@ class PathFollower:
             if car.lidar.front_lateral <= 0.85:
                 if not self.avoid_active:
                     self.avoid_active = True
-                    if abs(car.lidar.front_lateral_signed) < 0.05:
-                        self.avoid_side = (
-                            -1.0 if car.lidar.right_min >= car.lidar.left_min else 1.0
-                        )
-                    else:
-                        self.avoid_side = (
-                            -1.0 if car.lidar.front_lateral_signed > 0.0 else 1.0
-                        )
+                    # 同一个障碍的反复重入沿用上次的绕行方向：左右交替会让车头
+                    # 来回摆、净位移为零（ROS 侧实测）。
+                    if self.clock.now >= self._side_memo_until:
+                        if abs(car.lidar.front_lateral_signed) < 0.05:
+                            self._side_memo = (
+                                -1.0
+                                if car.lidar.right_min >= car.lidar.left_min
+                                else 1.0
+                            )
+                        else:
+                            self._side_memo = (
+                                -1.0 if car.lidar.front_lateral_signed > 0.0 else 1.0
+                            )
+                        self._side_memo_until = self.clock.now + AVOID_SIDE_HOLD
+                    self.avoid_side = self._side_memo
                     self.avoid_start = self.clock.now
                     side_name = "RIGHT" if self.avoid_side < 0 else "LEFT"
                     print(
@@ -484,7 +509,7 @@ class PathFollower:
             goal_speed = min(goal_speed, braking_speed)
         else:
             goal_speed = forward
-        accel = 4.5 if goal_speed > self.speed_cmd else 6.0
+        accel = ACCEL_UP if goal_speed > self.speed_cmd else ACCEL_DOWN
         max_delta = accel * self.frame_dt
         self.speed_cmd += float(
             np.clip(goal_speed - self.speed_cmd, -max_delta, max_delta)
@@ -562,6 +587,31 @@ class PathFollower:
         car.right_cmd += COMMAND_RAMP * (right_target - car.right_cmd)
         car.steer_cmd += COMMAND_RAMP * (steer_target - car.steer_cmd)
         car.set_motion(car.left_cmd, car.right_cmd, car.steer_cmd)
+        # 卡死告警：距航点还很远却没有前进速度，超过 STALL_WARN_TIME 打一行，
+        # 不用等 waypoint 超时才在错误信息里看到。
+        stuck = (
+            not pivoting
+            and distance > STALL_WARN_ERR
+            and abs(forward) < STALL_WARN_SPEED
+        )
+        if not stuck:
+            self._stall_since = None
+            self._stall_warned = False
+        elif self._stall_since is None:
+            self._stall_since = self.clock.now
+        elif (
+            not self._stall_warned
+            and self.clock.now - self._stall_since >= STALL_WARN_TIME
+        ):
+            self._stall_warned = True
+            print(
+                f"  [{car.name}] WARNING 原地磨 "
+                f"{self.clock.now - self._stall_since:.1f} s："
+                f"speed={forward:.2f}, 距航点 {distance:.2f} m, "
+                f"heading_err={np.rad2deg(heading_error):.0f}°, "
+                f"blocked={int(car.lidar.front_blocked)}, "
+                f"detour={int(self.avoid_active)}, fmin={car.lidar.front_min:.2f}"
+            )
         if _TRACE and self.clock.now - getattr(self, "_next_trace", 0.0) >= 0.25:
             self._next_trace = self.clock.now
             print(
@@ -1436,7 +1486,7 @@ class DualCarMission:
             self.car1,
             CAR1_SEARCH_PATH,
             final_tolerance=0.12,
-            max_speed=6.50,
+            max_speed=2.00,
         )
         observation_pos, observation_yaw = self.car1.pose()
         # 抵达观测位的总览截图：此时雷达点云、两车与目标都在画面里，
@@ -1458,7 +1508,7 @@ class DualCarMission:
             self.io.clock,
             waypoint_timeout=32.0,
             final_tolerance=0.05,
-            max_speed=6.50,
+            max_speed=2.00,
         )
         print("[并发调度] 二号车已收到出发指令，开始连续前往目标区。")
         run_wait_concurrent(self.io, 0.15, car2_follower)
@@ -1528,7 +1578,7 @@ class DualCarMission:
             self.io.clock,
             waypoint_timeout=18.0,
             final_tolerance=0.10,
-            max_speed=1.20,
+            max_speed=1.00,
         )
         run_followers_until_primary_done(self.io, car1_measure, car2_follower)
 
@@ -1551,7 +1601,7 @@ class DualCarMission:
                     self.io.clock,
                     waypoint_timeout=18.0,
                     final_tolerance=0.10,
-                    max_speed=0.80,
+                    max_speed=0.50,
                 )
                 run_followers_until_primary_done(
                     self.io, retry, car2_follower
@@ -1593,7 +1643,7 @@ class DualCarMission:
             self.io.clock,
             waypoint_timeout=18.0,
             final_tolerance=0.12,
-            max_speed=1.20,
+            max_speed=1.00,
         )
         # 最后这段 0.56 m 直线入位期间关掉"绕行同伴车"：两车的最小间距由停靠规划
         # 保证（中心距 ≥ 0.82 m），而雷达一旦恰好在这时触发绕行，车会被带偏到抓取位
@@ -1744,10 +1794,10 @@ class DualCarMission:
         print("\n[阶段 6] 投放完成，两车开始倒车/返航。")
         reverse_exit = [
             ReverseStraightFollower(
-                self.car1, RADIATION_EXIT_Y, self.io.clock, max_speed=0.55
+                self.car1, RADIATION_EXIT_Y, self.io.clock, max_speed=0.50
             ),
             ReverseStraightFollower(
-                self.car2, RADIATION_EXIT_Y, self.io.clock, max_speed=0.55
+                self.car2, RADIATION_EXIT_Y, self.io.clock, max_speed=0.50
             ),
         ]
         reverse_min_gap = run_two_straight_reverses(self.io, reverse_exit)
@@ -1777,7 +1827,7 @@ class DualCarMission:
             self.io.clock,
             waypoint_timeout=28.0,
             final_tolerance=0.10,
-            max_speed=6.50,
+            max_speed=2.00,
         )
         car2_return = PathFollower(
             self.car2,
@@ -1785,7 +1835,7 @@ class DualCarMission:
             self.io.clock,
             waypoint_timeout=28.0,
             final_tolerance=0.10,
-            max_speed=6.50,
+            max_speed=2.00,
         )
         run_two_followers(
             self.io,
