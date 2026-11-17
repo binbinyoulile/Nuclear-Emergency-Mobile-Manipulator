@@ -105,6 +105,8 @@ class SimBridge(Node):
         # —— 仅帧循环线程读写的状态 ——
         self._frame = 0
         self._timeouts = 0
+        self._idle_frames = 0
+        self._started = False
         self._sim_time = 0.0
         self._arm_q = np.zeros(6)
         self._arm_base_pos = np.zeros(3)
@@ -360,7 +362,7 @@ class SimBridge(Node):
         finally:
             self.get_logger().info(
                 f"帧循环结束：frames={self._frame} 指令超时={self._timeouts} "
-                f"sim_time={self._sim_time:.2f}s"
+                f"空转帧={self._idle_frames} sim_time={self._sim_time:.2f}s"
             )
 
     def _apply_commands(self) -> None:
@@ -387,20 +389,30 @@ class SimBridge(Node):
         self._arm_q = self._data.qpos[self._base.ARM_QADR].copy()
 
     def _wait_next_commands(self) -> bool:
-        """等待两车各一条新指令；超时返回 False 并按旧指令继续推进。"""
+        """等待两车各一条新指令；超时返回 False 并按旧指令继续推进。
+
+        超时分两段记：两车都下发过指令**之前**是启动空转（任务节点还在等状态话题
+        就绪，桥已经在推进帧），只累加 `_idle_frames`；之后仍等不到新指令，才算
+        "帧被旧指令推进"（`_timeouts`），并行跑的数据可信性判据要求它为 0。
+        """
         timeout = float(self.get_parameter("command_timeout").value)
         with self._cmd_lock:
             ok = self._cmd_lock.wait_for(
                 lambda: all(self._fresh), timeout=max(0.0, timeout)
             )
             self._fresh = [False, False]
-        if not ok:
-            self._timeouts += 1
-            if self._timeouts <= 3 or self._timeouts % 200 == 0:
-                self.get_logger().warn(
-                    f"等待两车指令超时（第 {self._timeouts} 次），按旧指令推进"
-                )
-        return ok
+        if ok:
+            self._started = True
+            return True
+        if not self._started:
+            self._idle_frames += 1
+            return False
+        self._timeouts += 1
+        if self._timeouts <= 3 or self._timeouts % 200 == 0:
+            self.get_logger().warn(
+                f"等待两车指令超时（任务开始后第 {self._timeouts} 次），按旧指令推进"
+            )
+        return False
 
     # ------------------------------------------------------------------
     # 发布

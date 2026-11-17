@@ -365,6 +365,7 @@ mm_msgs  ◄── mm_sim ──► mm_mission ◄── mm_perception（仅 msg
 | 全程最小中心距 | ≥ 0.82 m |
 | 车车接触数 | 0 |
 | 回起点误差 | < 0.20 m |
+| 帧推进时的指令超时（收尾日志 `指令超时=`） | 0（只统计两车都下发过指令之后；启动空转记 `空转帧`，不计入） |
 | 单次仿真时长 | 仅记录、不判定（真机速度口径后单进程 69.4~70.9 s，ROS 侧更长） |
 
 不做逐位比对：跨进程必然有调度抖动，要求 1e-9 一致是不现实的，也不该成为目标。
@@ -372,6 +373,11 @@ mm_msgs  ◄── mm_sim ──► mm_mission ◄── mm_perception（仅 msg
 ### 9.3 记录与复现
 
 - `scripts/run_ros_matrix.py`：逐种子起 launch → 订阅 `/mission/result` → 落 `reports/ros_regression.csv`；
+- 并行跑：topic 名写死，同一 DDS domain 不能并跑，每个种子给独立 domain
+  （`ROS_DOMAIN_ID=$((100+seed))` + `ROS_LOCALHOST_ONLY=1`）配 `xargs -P N`，`N = min(4, nproc/2)`。
+  合并结果前先看每份收尾日志的 `指令超时=` 是否为 0：桥等两车轮速用的是墙钟 `command_timeout`（50 ms），
+  CPU 争用会超时并用旧指令推进，等于偷偷给某辆车加了指令延迟；警告行本身是节流的（第 1~3 次 +
+  每 200 次一行），不能当超时次数用；
 - 录一条完整 `ros2 bag`（`/clock` + 全部话题），用于离线回放与"任务层脱离仿真"的验证（阶段 1.5 可选）。
 
 ---
@@ -397,7 +403,7 @@ mm_msgs  ◄── mm_sim ──► mm_mission ◄── mm_perception（仅 msg
 | 2 | `mm_sim` + `sim_bridge`：物理、传感器、TF、`/clock`、指令接收 | **不改任务层**，单跑 sim_bridge，`ros2 topic hz` 全部达标，rviz 里能看到两车与 TF | ✅ |
 | 3 | 还时钟债 + `mm_mission` 的 `Ros*` 适配器 + mission 节点 | 轨道 A 仍逐位一致（证明搬动无误）；seed 6 端到端跑通 | ✅ 阶段 1 完成（冒烟）|
 | 4 | 感知拆分：`mm_perception` 替换任务层内的检测 | 视觉误差复测 ≤ 30 mm | ✅ 同帧逐位一致（0.000 mm）|
-| 5 | 任务层拆分：`mission_core.py` + 端口扩展 + 桥补 `/sim/object_pose` / `car1/pinch` | 轨道 A 21/21 且与基线逐位一致；轨道 B 21 种子（Ubuntu） | 轨道 A ✅ / 轨道 B 待跑 |
+| 5 | 任务层拆分：`mission_core.py` + 端口扩展 + 桥补 `/sim/object_pose` / `car1/pinch` | 轨道 A 21/21 且与基线逐位一致；轨道 B 21 种子（Ubuntu） | 轨道 A ✅ / 轨道 B ✅ 21/21（`e09370d`）|
 | 6 | `run_ros_matrix.py` + bag 录制 + 指标带对比 | `reports/ros_regression.csv`，21/21 | 待做 |
 | 7 | 文档与版本：ARCHITECTURE 增 ROS 章节、README 增运行命令、打 `v1.1.0` | 仓库自洽，新人按 README 能跑起来 | 待做 |
 

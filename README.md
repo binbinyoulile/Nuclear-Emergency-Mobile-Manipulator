@@ -239,9 +239,9 @@ D:\Python313\python.exe .\scripts\run_matrix.py --seeds 0-20
 （`mm_msgs` / `mm_sim` / `mm_mission` / `mm_perception` / `mm_bringup`），未改任何
 `package.xml` / CMake。两轮冒烟：
 
-- **仿真侧**（`sim_only.launch.py max_frames:=500`）：`frames=500 指令超时=500 sim_time=10.00s`，
-  进程 clean exit；`500 × 0.02 = 10.00 s` 即 50 Hz 仿真帧率；`/car1/odom` 有数据，
-  TF 树含 `map → car1/base_link`、`car1/arm_base_link`、`car1/camera_link`。
+- **仿真侧**（`sim_only.launch.py max_frames:=500`）：`帧循环结束：frames=500 指令超时=0 空转帧=500 sim_time=10.00s`
+  （当时旧计数只打一个数，记作 `指令超时=500`），进程 clean exit；`500 × 0.02 = 10.00 s`
+  即 50 Hz 仿真帧率；`/car1/odom` 有数据，TF 树含 `map → car1/base_link`、`car1/arm_base_link`、`car1/camera_link`。
 - **全链路**（`sim_mission.launch.py seed:=6`）：`stage=done ok=true`，车开到观测位
   （`stance_error_m=0.103`）、感知给出**粗端中心**（`vision_error_mm=2.36`）、
   `/perception/target` 的 `valid=true`、两车接触 0。
