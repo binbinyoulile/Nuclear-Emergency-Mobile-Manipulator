@@ -176,7 +176,16 @@ PLACE_APPROACH_TIME = 2.4
 PLACE_DESCEND_TIME = 4.0
 PLACE_INSERT_Z = BUCKET_OPENING_Z + 0.06    # 松爪时夹持点的高度：杆悬在桶口正上方
 PLACE_SETTLE_TIME = 2.0
-BUCKET_XY_TOL = 0.05
+# 落桶验收：直接量"整根杆在不在桶里"，不再用"质心离桶心多远"。
+# 质心容差是照着"杆横躺"这一种姿态定的代理量：横躺时杆两端离质心 95 / 106 mm，
+# 质心偏十几毫米就有一头探出桶口；而杆立着时只占 Ø6 一小块，质心偏 100 mm 也还在桶内。
+# 同一条容差对两种姿态自相矛盾（实测 ROS 侧杆会被甩成竖直落入），因此改成几何判据。
+BUCKET_MOUTH_RADIUS = 0.12              # 桶口内接圆半径（32 边形内切圆）
+ROD_THIN_TIP = 0.1852                   # body 原点 → 细端尖端（碰撞体实测）
+ROD_THICK_TIP = 0.0162                  # body 原点 → 粗端尖端
+ROD_RADIUS = 0.003                      # 粗端半径
+BUCKET_EDGE_MARGIN = 0.003              # 端点离桶口内壁至少留这么多
+BUCKET_FLOOR_MARGIN = 0.02              # 端点允许低于桶底平面的量
 
 # 一号车停车距离：抓取位按机械臂可达性取 0.85 m；近距测量位取 1.41 m（腕部相机
 # 离目标约 1.0 m，落在 D435i 28.5° 固定下俯的可见带内），详见 DualCarMission.run 中的注释。
@@ -1104,6 +1113,43 @@ def held_rod_axis(io: RobotIO) -> np.ndarray:
     return axis / max(float(np.linalg.norm(axis)), 1e-9)
 
 
+def rod_inside_bucket(
+    rod_pos: np.ndarray,
+    axis: np.ndarray,
+    bucket_xy: np.ndarray,
+) -> tuple[bool, float, float]:
+    """整根杆是否落在桶口投影内、并夹在桶底与桶沿之间。
+
+    参数：
+        rod_pos: 杆 body 原点（粗端中心）的世界坐标，shape=(3,)。
+        axis: 杆轴单位向量（从粗端指向细端），shape=(3,)。
+        bucket_xy: 桶心世界 XY，shape=(2,)。
+    返回：
+        (是否在桶内, 端点离桶口内壁的最近余量 m, 杆最高点 z)。
+    说明：
+        杆是一条线段，到某点的最大距离必在端点取得，竖直方向同理，所以只查两个端点。
+        这样"横躺"与"立着"用同一把尺子，不依赖任何姿态假设；早期用"质心偏移 ≤50 mm"
+        在这两种姿态下等价于两条完全不同的要求。
+    重要性等级：A"""
+    a = np.asarray(axis, dtype=float)
+    a = a / max(float(np.linalg.norm(a)), 1e-9)
+    pos = np.asarray(rod_pos, dtype=float)
+    ends = (pos + ROD_THIN_TIP * a, pos - ROD_THICK_TIP * a)
+    center = np.asarray(bucket_xy, dtype=float)[:2]
+    limit = float(BUCKET_MOUTH_RADIUS - ROD_RADIUS - BUCKET_EDGE_MARGIN)
+    margin = min(
+        limit - float(np.linalg.norm(end[:2] - center)) for end in ends
+    )
+    top = float(max(end[2] for end in ends)) + ROD_RADIUS
+    bottom = float(min(end[2] for end in ends))
+    inside = bool(
+        margin > 0.0
+        and bottom > BUCKET_FLOOR_Z - BUCKET_FLOOR_MARGIN
+        and top < BUCKET_OPENING_Z
+    )
+    return inside, float(margin), top
+
+
 def choose_grasp_spin(
     io: RobotIO,
     target_world: np.ndarray,
@@ -1664,28 +1710,27 @@ class DualCarMission:
             -62.0,
         )
         obj_after_drop, _ = self.io.perception.object_pose()
-        # 判据用"杆质心"而不是"粗端原点"：夹持点贴着粗端，origin 离质心 79 mm，
-        # 杆落进桶里还会滚一段，拿原点判会把正确投放误判成偏移。
         rod_axis = held_rod_axis(self.io)
+        # 质心偏移只是记录量（横向精度参考），判定用"整根杆在不在桶里"
         rod_com = obj_after_drop + ROD_COM_OFFSET_M * rod_axis
         drop_xy_error = float(np.linalg.norm(rod_com[:2] - car2_pos[:2]))
         drop_tilt_deg = float(
             np.rad2deg(np.arccos(min(1.0, abs(float(rod_axis[2])))))
         )
-        # 判据：质心水平落在桶心 50 mm 内，且高度明显低于桶口——"架在桶沿上"会被排除。
-        dropped_inside = bool(
-            drop_xy_error < BUCKET_XY_TOL
-            and BUCKET_FLOOR_Z < float(rod_com[2]) < BUCKET_OPENING_Z - 0.03
+        dropped_inside, mouth_margin, rod_top_z = rod_inside_bucket(
+            obj_after_drop, rod_axis, car2_pos[:2]
         )
         print(
             f"           投放后杆质心=({rod_com[0]:.3f}, {rod_com[1]:.3f}, "
             f"{rod_com[2]:.3f})，与桶心水平偏差={drop_xy_error:.3f} m，"
-            f"杆与竖直方向夹角={drop_tilt_deg:.1f}°"
+            f"杆与竖直方向夹角={drop_tilt_deg:.1f}°，"
+            f"口内余量={mouth_margin * 1000:.0f} mm，杆顶={rod_top_z:.3f} m"
         )
         if not dropped_inside:
             raise RuntimeError(
-                f"cooperative drop failed, xy error={drop_xy_error:.4f} m, "
-                f"tilt={drop_tilt_deg:.1f} deg"
+                f"cooperative drop failed: mouth margin={mouth_margin * 1000:.1f} mm, "
+                f"rod top={rod_top_z:.3f} m (opening {BUCKET_OPENING_Z:.3f} m), "
+                f"xy error={drop_xy_error:.4f} m, tilt={drop_tilt_deg:.1f} deg"
             )
         self.metrics.update(
             drop_xy_error=drop_xy_error,
@@ -1751,14 +1796,13 @@ class DualCarMission:
         car1_final, _ = self.car1.pose()
         car2_final, _ = self.car2.pose()
         obj_final, _ = self.io.perception.object_pose()
-        # 同样用质心判：杆在桶里是斜靠着的，粗端原点离桶心固定差半个杆长。
-        final_com = obj_final + ROD_COM_OFFSET_M * held_rod_axis(self.io)
+        final_axis = held_rod_axis(self.io)
+        final_com = obj_final + ROD_COM_OFFSET_M * final_axis
         final_xy_error = float(
             np.linalg.norm(final_com[:2] - car2_final[:2])
         )
-        final_inside = bool(
-            final_xy_error < BUCKET_XY_TOL
-            and BUCKET_FLOOR_Z < float(final_com[2]) < BUCKET_OPENING_Z - 0.03
+        final_inside, final_margin, _ = rod_inside_bucket(
+            obj_final, final_axis, car2_final[:2]
         )
         car1_home_error = float(np.linalg.norm(car1_final[:2] - CAR1_START))
         car2_home_error = float(np.linalg.norm(car2_final[:2] - CAR2_START))
@@ -1791,7 +1835,8 @@ class DualCarMission:
             f"           CAR1=({car1_final[0]:.3f}, {car1_final[1]:.3f}), "
             f"CAR2=({car2_final[0]:.3f}, {car2_final[1]:.3f})\n"
             f"           视觉误差={vision_error * 1000:.2f} mm, "
-            f"桶内误差={final_xy_error:.4f} m, 车车接触={contacts}\n"
+            f"桶内余量={final_margin * 1000:.0f} mm（质心偏移 {final_xy_error:.4f} m）, "
+            f"车车接触={contacts}\n"
             f"           回起点误差: CAR1={car1_home_error:.3f} m, "
             f"CAR2={car2_home_error:.3f} m"
         )
