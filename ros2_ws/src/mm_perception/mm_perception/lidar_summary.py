@@ -32,6 +32,7 @@ from pathlib import Path
 
 import numpy as np
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import (
     DurabilityPolicy,
@@ -305,7 +306,9 @@ def main() -> None:
     node = LidarSummary()
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
+        # launch 发 SIGINT 时 rclpy 先把 context 关掉，再抛 ExternalShutdownException；
+        # 不接住会以退出码 1 结束，日志里留下一条假故障。
         pass
     finally:
         node.report("对照结束")

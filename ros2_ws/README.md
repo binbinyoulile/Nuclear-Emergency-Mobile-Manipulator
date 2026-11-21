@@ -19,7 +19,7 @@ mm_sim_bridge ──(状态话题 + /clock + /tf)──▶ mm_mission ──(调
 | `mm_msgs` | ament_cmake | 6 个 msg + 2 个 srv（轮速、雷达摘要、夹爪、目标、状态、逆解、截图） |
 | `mm_sim` | ament_python | `sim_bridge`：独占 MuJoCo，物理 / 传感器 / `/clock` / 帧同步 |
 | `mm_mission` | ament_python | `mission_node`：任务线程 + 硬件端口适配器；`mode:=mission` 跑仓库根的 `mission_core`，`mode:=smoke` 跑冒烟 |
-| `mm_perception` | ament_python | `target_localizer`：深度图 + TF → **粗端中心**世界坐标 |
+| `mm_perception` | ament_python | `target_localizer`：深度图 + TF → **粗端中心**世界坐标；`lidar_summary`：点云 → 雷达摘要（真车避障链，见下） |
 | `mm_bringup` | ament_cmake | launch 文件 |
 
 依赖方向：`mm_sim` 与 `mm_mission` **互不 import**，只共享 `mm_msgs` 的消息契约。
@@ -92,6 +92,7 @@ ros2 launch mm_bringup sim_only.launch.py seed:=6 max_frames:=500
 ros2 topic hz /clock                 # 50 Hz（跑满即停，属于正常）
 ros2 topic hz /car1/odom             # 50 Hz
 ros2 topic hz /car1/obstacle_summary # 10 Hz
+ros2 topic hz /car1/lidar/points     # 10 Hz，仅 lidar_summary:=true 时发布
 ros2 topic hz /sim/object_pose       # 50 Hz（被操作对象的实时位姿）
 ros2 run tf2_tools view_frames       # 5 个帧全是 map 的子帧：carN/base_link、car1/arm_base_link、car1/camera_link、car1/pinch
 
@@ -99,6 +100,25 @@ ros2 run tf2_tools view_frames       # 5 个帧全是 map 的子帧：carN/base_
 ros2 run tf2_ros tf2_echo map car1/arm_base_link
 ros2 run tf2_ros tf2_echo map car1/pinch
 ```
+
+### 雷达摘要的对照（真车避障链）
+
+任务层的避障判据只认 `ObstacleSummary` 的 8 个数。仿真里由桥直接算，真车只有点云、
+没有射线，由 `mm_perception` 的 `lidar_summary` 用点云重算。两者是否同源，用一条命令自证：
+
+```bash
+ros2 launch mm_bringup sim_mission.launch.py seed:=0 lidar_summary:=true
+```
+
+这条 launch 会（1）让桥额外发布 `/{car}/lidar/points`（雷达系点云，10 Hz，`publish_cloud`
+参数控制、默认关闭）；（2）起动 `lidar_summary` 的 check 模式——它把点云算出的 8 个数与桥的
+摘要按时间戳逐帧配对，退出时打印最大偏差。实测 seed 0 全流程：统计 950 帧、7 项距离量
+最大偏差 `9.1e-8 m`、`front_blocked` 0 帧不一致、`inf` 0 次；另有 219 帧因回波正好压在
+30°/90°/150° 扇区边界上（仿真方位角是 3° 的整数倍，边界射线的归属由浮点末位决定）单独
+计数、不进统计。扇区界限与警戒距离直接从 `mission_core` import，不另存常量。
+
+真车用 `mode:=publish`，直接发布 `/{car}/obstacle_summary`；此时必须给
+`mount_height`（雷达安装高度）与 `self_radius`（自身盲区半径）的实测值。
 
 任务结束会打印一行 `RESULT_JSON:`，同时发布到 `/mission/result`。
 
