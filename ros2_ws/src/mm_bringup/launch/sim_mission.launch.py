@@ -41,6 +41,7 @@ def generate_launch_description() -> LaunchDescription:
     mode = LaunchConfiguration("mode")
     command_timeout = LaunchConfiguration("command_timeout")
     use_rviz = LaunchConfiguration("use_rviz")
+    lidar_summary = LaunchConfiguration("lidar_summary")
 
     return LaunchDescription(
         [
@@ -60,6 +61,11 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument(
                 "use_rviz", default_value="false", description="是否同时启动 rviz2"
             ),
+            DeclareLaunchArgument(
+                "lidar_summary",
+                default_value="false",
+                description="同时跑雷达摘要节点，与桥的摘要逐帧对照（check 模式）",
+            ),
             Node(
                 package="mm_sim",
                 executable="sim_bridge",
@@ -72,6 +78,28 @@ def generate_launch_description() -> LaunchDescription:
                         "command_timeout": ParameterValue(
                             command_timeout, value_type=float
                         ),
+                        # 点云只在对照时发，正常回归不增加 DDS 负担。
+                        "publish_cloud": ParameterValue(
+                            lidar_summary, value_type=bool
+                        ),
+                    }
+                ],
+            ),
+            Node(
+                package="mm_perception",
+                executable="lidar_summary",
+                name="mm_lidar_summary",
+                output="screen",
+                condition=IfCondition(lidar_summary),
+                additional_env={"MM_REPO_ROOT": repo_root},
+                parameters=[
+                    {
+                        "use_sim_time": True,
+                        # 仿真里只用 check 模式：不接管任务话题，只做等效性对照。
+                        "mode": "check",
+                        "car": "car1",
+                        # 桥的点云已经按离地高度过滤过，这里关掉地面门限。
+                        "filter_ground": False,
                     }
                 ],
             ),

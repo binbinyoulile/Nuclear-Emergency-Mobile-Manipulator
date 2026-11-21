@@ -21,6 +21,7 @@ setup(
     entry_points={
         "console_scripts": [
             "target_localizer = mm_perception.target_localizer:main",
+            "lidar_summary = mm_perception.lidar_summary:main",
         ],
     },
 )

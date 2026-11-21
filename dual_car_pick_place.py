@@ -242,6 +242,9 @@ class LidarScanner(LidarInterface):
         self.rear_clear = float("inf")
         self.vis_points: list[np.ndarray] = []
         self.front_points: list[np.ndarray] = []
+        # 雷达坐标系下的有效回波点，供 ROS 桥转成 PointCloud2 给感知节点重算摘要；
+        # 单进程路径不使用它，因此不影响任何指标。
+        self.hit_local = np.empty((0, 3), dtype=np.float32)
 
     def scan_if_due(self) -> None:
         """按 10 Hz 周期触发雷达扫描。
@@ -301,6 +304,7 @@ class LidarScanner(LidarInterface):
         dynamic_roots = self.peer_roots if self.peer_avoidance else set()
         vis_points: list[np.ndarray] = []
         front_points: list[np.ndarray] = []
+        hit_local: list[np.ndarray] = []
         front_min = float("inf")
         front_lateral = float("inf")
         front_lateral_signed = 0.0
@@ -324,6 +328,7 @@ class LidarScanner(LidarInterface):
             hit = origin + distance * world_dirs[idx]
             if hit[2] < 0.08:
                 continue
+            hit_local.append(local_dirs[idx] * distance)
             az = float(az_flat[idx])
             is_front = (
                 abs(az) <= LIDAR_FRONT_HALF
@@ -351,6 +356,7 @@ class LidarScanner(LidarInterface):
 
         self.vis_points = vis_points
         self.front_points = front_points
+        self.hit_local = np.asarray(hit_local, dtype=np.float32).reshape(-1, 3)
         self.front_min = front_min
         self.front_lateral = front_lateral
         self.front_lateral_signed = front_lateral_signed

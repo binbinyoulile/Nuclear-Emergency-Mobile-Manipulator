@@ -42,8 +42,9 @@ from rclpy.qos import (
     ReliabilityPolicy,
 )
 from rosgraph_msgs.msg import Clock
-from sensor_msgs.msg import CameraInfo, Image, JointState
-from std_msgs.msg import Bool, Float64MultiArray, Int32
+from sensor_msgs.msg import CameraInfo, Image, JointState, PointCloud2
+from sensor_msgs_py import point_cloud2
+from std_msgs.msg import Bool, Float64MultiArray, Header, Int32
 from std_srvs.srv import Trigger
 from tf2_ros import TransformBroadcaster
 
@@ -91,6 +92,8 @@ class SimBridge(Node):
         self.declare_parameter("seed", -1)
         self.declare_parameter("command_timeout", 0.05)
         self.declare_parameter("max_frames", 0)
+        # 默认关闭：点云只给感知节点做等效性对照用，开着会给 DDS 增加 ~0.3 MB/s。
+        self.declare_parameter("publish_cloud", False)
 
         # —— 回调与帧循环之间共享的缓存（受 _cmd_lock 保护）——
         self._cmd_lock = threading.Condition()
@@ -112,6 +115,9 @@ class SimBridge(Node):
         self._arm_base_pos = np.zeros(3)
         self._arm_base_rot = np.eye(3)
         self._shutdown = False
+        self._cloud_enabled = bool(self.get_parameter("publish_cloud").value)
+        # 上一次发点云时的雷达扫描时刻，用来把点云限幅到雷达自身频率（10 Hz）。
+        self._cloud_scan_time = [-1e9, -1e9]
 
         self._load_scene()
         self._build_interfaces()
@@ -212,6 +218,10 @@ class SimBridge(Node):
         ]
         self._obstacle_pubs = [
             self.create_publisher(ObstacleSummary, f"/{name}/obstacle_summary", qos)
+            for name in CAR_NAMES
+        ]
+        self._cloud_pubs = [
+            self.create_publisher(PointCloud2, f"/{name}/lidar/points", qos)
             for name in CAR_NAMES
         ]
 
@@ -429,6 +439,7 @@ class SimBridge(Node):
             self._publish_odom(index, name, car, stamp)
             self._publish_chassis_joints(index, name, stamp)
             self._publish_obstacle(index, name, car, stamp)
+            self._publish_lidar_cloud(index, name, car, stamp)
         self._publish_arm_joints(stamp)
         self._publish_gripper(stamp)
         self._publish_truth(stamp)
@@ -478,6 +489,23 @@ class SimBridge(Node):
         msg.rear_min = float(lidar.rear_min)
         msg.rear_clear = float(lidar.rear_clear)
         self._obstacle_pubs[index].publish(msg)
+
+    def _publish_lidar_cloud(self, index: int, name: str, car, stamp: Time) -> None:
+        """把这一帧雷达测到的有效回波发成点云（雷达坐标系），默认关闭。
+
+        只在雷达刷新的那一帧发（10 Hz），时间戳与同一帧的 ObstacleSummary 完全相同，
+        因此感知节点可以按时间戳逐帧对照两边算出的 8 个数。
+        """
+        if not self._cloud_enabled:
+            return
+        lidar = car.lidar
+        if lidar.last_scan_time == self._cloud_scan_time[index]:
+            return
+        self._cloud_scan_time[index] = lidar.last_scan_time
+        header = Header(stamp=stamp, frame_id=f"{name}/lidar_link")
+        self._cloud_pubs[index].publish(
+            point_cloud2.create_cloud_xyz32(header, lidar.hit_local.tolist())
+        )
 
     def _publish_arm_joints(self, stamp: Time) -> None:
         msg = JointState()
