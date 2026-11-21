@@ -87,6 +87,30 @@ from mission_core import (  # noqa: E402
 from .lidar_geometry import summarize  # noqa: E402
 
 MAX_RANGE = 100.0
+# 「压在扇区边界上」的判定余量（弧度）。1e-5 rad 在 2.8 m 处约 0.03 mm。
+BOUNDARY_TOL = 1e-5
+
+
+def _touches_boundary(points: np.ndarray) -> bool:
+    """点云里是否有回波正好压在扇区边界上。
+
+    仿真扫描器的方位角是 3° 的整数倍，30°/90°/150° 上一定有射线；而 +150° 那条射线在
+    仿真内部比门限低 4.4e-16（被排除）、-150° 那条正好相等（被包含）——归属由浮点末位
+    决定。真车没有这种整数倍方位角，所以这类帧单独计数、不进偏差统计，而不是用末位误差
+    去否定几何实现。
+    """
+    if points.size == 0:
+        return False
+    az = np.abs(np.arctan2(points[:, 1], points[:, 0]))
+    for threshold in (
+        LIDAR_FRONT_HALF,
+        np.pi / 2.0,
+        LIDAR_SIDE_MAX,
+        np.pi - LIDAR_REAR_HALF,
+    ):
+        if bool(np.any(np.abs(az - threshold) < BOUNDARY_TOL)):
+            return True
+    return False
 
 
 class LidarSummary(Node):
@@ -152,6 +176,8 @@ class LidarSummary(Node):
         self._missing_mismatch = 0
         self._empty_clouds = 0
         self._counts: dict[tuple[int, int], int] = {}
+        self._ambiguous: dict[tuple[int, int], bool] = {}
+        self._boundary_frames = 0
         self._detail_left = 5
         if self._mode == "check":
             self.create_subscription(
@@ -197,6 +223,7 @@ class LidarSummary(Node):
         key = self._stamp_key(msg)
         self._ours[key] = output
         self._counts[key] = int(points.shape[0])
+        self._ambiguous[key] = _touches_boundary(points)
         self._pair(key)
         self._prune(msg.header.stamp.sec)
 
@@ -215,6 +242,11 @@ class LidarSummary(Node):
         del self._ours[key]
         del self._refs[key]
         count = self._counts.pop(key, -1)
+        ambiguous = self._ambiguous.pop(key, False)
+        if ambiguous:
+            # 有回波正好压在扇区边界上：归属由浮点末位决定，这一帧不进偏差统计。
+            self._boundary_frames += 1
+            return
         self._frames += 1
         if bool(ours.front_blocked) != bool(ref.front_blocked):
             self._blocked_mismatch += 1
@@ -246,7 +278,7 @@ class LidarSummary(Node):
 
     def _prune(self, now_sec: int) -> None:
         """丢掉 60 s 还没配上的残留，防止节点长时间运行后字典膨胀。"""
-        for store in (self._ours, self._refs, self._counts):
+        for store in (self._ours, self._refs, self._counts, self._ambiguous):
             for key in [k for k in store if now_sec - k[0] > 60]:
                 del store[key]
 
@@ -260,9 +292,10 @@ class LidarSummary(Node):
         worst = max(self._max_diff.values()) if self._max_diff else 0.0
         detail = " ".join(f"{key}={self._max_diff[key]:.2e}" for key in FLOAT_FIELDS)
         self.get_logger().info(
-            f"{title}：最大偏差 {worst:.3e} m，"
+            f"{title}：统计 {self._frames} 帧，最大偏差 {worst:.3e} m，"
             f"front_blocked 不一致 {self._blocked_mismatch} 帧，"
-            f"inf 不一致 {self._missing_mismatch} 次，空点云 {self._empty_clouds} 帧 | {detail}"
+            f"inf 不一致 {self._missing_mismatch} 次，空点云 {self._empty_clouds} 帧，"
+            f"边界打平 {self._boundary_frames} 帧（不计入）| {detail}"
         )
 
 
