@@ -151,6 +151,8 @@ class LidarSummary(Node):
         self._blocked_mismatch = 0
         self._missing_mismatch = 0
         self._empty_clouds = 0
+        self._counts: dict[tuple[int, int], int] = {}
+        self._detail_left = 5
         if self._mode == "check":
             self.create_subscription(
                 ObstacleSummary, reference_topic, self._on_reference, qos
@@ -194,6 +196,7 @@ class LidarSummary(Node):
 
         key = self._stamp_key(msg)
         self._ours[key] = output
+        self._counts[key] = int(points.shape[0])
         self._pair(key)
         self._prune(msg.header.stamp.sec)
 
@@ -211,9 +214,11 @@ class LidarSummary(Node):
             return
         del self._ours[key]
         del self._refs[key]
+        count = self._counts.pop(key, -1)
         self._frames += 1
         if bool(ours.front_blocked) != bool(ref.front_blocked):
             self._blocked_mismatch += 1
+        worst_here = 0.0
         for field in FLOAT_FIELDS:
             a = float(getattr(ours, field))
             b = float(getattr(ref, field))
@@ -223,14 +228,25 @@ class LidarSummary(Node):
                 self._missing_mismatch += 1
                 continue
             delta = abs(a - b)
+            worst_here = max(worst_here, delta)
             if delta > self._max_diff[field]:
                 self._max_diff[field] = delta
+        if worst_here > 1e-3 and self._detail_left > 0:
+            # 临时排查：把这一帧两边的值都打出来，看是点集不同还是算法不同。
+            self._detail_left -= 1
+            ours_text = " ".join(f"{k}={float(getattr(ours, k)):.4f}" for k in FLOAT_FIELDS)
+            ref_text = " ".join(f"{k}={float(getattr(ref, k)):.4f}" for k in FLOAT_FIELDS)
+            self.get_logger().warn(
+                f"偏差细节 stamp={key[0]}.{key[1]:09d} 点数={count}\n"
+                f"    我方 {ours_text}\n"
+                f"    桥   {ref_text}"
+            )
         if self._frames % 200 == 0:
             self.report(f"已对照 {self._frames} 帧")
 
     def _prune(self, now_sec: int) -> None:
         """丢掉 60 s 还没配上的残留，防止节点长时间运行后字典膨胀。"""
-        for store in (self._ours, self._refs):
+        for store in (self._ours, self._refs, self._counts):
             for key in [k for k in store if now_sec - k[0] > 60]:
                 del store[key]
 
