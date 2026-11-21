@@ -56,9 +56,10 @@ CHASSIS_SETTLE_TIME = 1.2
 # 路径跟随参数。V_MAX 是限幅上限，实际速度由各段 max_speed 决定。
 V_MAX = 20.0
 K_POS = 3.50
-# 纵向加减速度上限（m/s²）。原来 4.5/6.0 是配合 6.5 m/s 仿真巡航的；真机按 2.0 m/s
-# 巡航、1.5 m/s² 舒适制动（2.0 m/s 的制动距离 1.33 m + 0.1 s 扫描 0.2 m ≈ 1.5 m，
-# 雷达 2.8 m 留一倍余量）。见 README「已知限制」里的速度—检测距离标定说明。
+# 纵向加减速度上限（m/s²）。真车参数表给出空载最高车速 ≤1.0 m/s（减速比 40、轮径 305 mm
+# → 1.0 m/s 对应电机 2505 rpm，2.0 m/s 要 5010 rpm，这套传动做不到），所以各段定档为
+# 巡航 0.80 / 持杆·入位 0.50 / 倒车 0.30 m/s；0.8 m/s 时制动距离约 0.21 m，雷达 2.8 m
+# 仍有十倍以上余量。见 README「已知限制」里的速度—检测距离标定说明。
 ACCEL_UP = 1.5
 ACCEL_DOWN = 2.0
 COMMAND_RAMP = 0.35
@@ -70,6 +71,8 @@ MAX_YAW_RATE = 1.5
 # 原地转向的轮速命令，单位 rad/s。
 # 实测 ±2.5 rad/s 低于轮胎静摩擦门限：四轮原地打滑、车身偏航只有 0.026 rad/s，
 # ±8.0 rad/s 时约为 1.32 rad/s，且横向滑移小；再高会明显平移离开对准点。
+# 注意：8 rad/s × 轮半径 0.1525 m = 1.22 m/s，已超真车空载上限 1.0 m/s。真机上摆正必须
+# 降到 ≤5 rad/s，且只用于补几度偏航（这批种子该分支从未触发）。
 SKID_TURN_WHEEL_SPEED = 8.0
 # 原地转向起转与收尾的轮速斜坡时间，单位 s。
 # 直接写 0 时车身仍带约 1.5 rad/s 横摆角速度，轮胎被瞬间拖停：实测定位点被
@@ -890,7 +893,7 @@ def drive_path(
     io: RobotIO,
     car: ChassisInterface,
     path: list[tuple[float, float]],
-    waypoint_timeout: float = 22.0,
+    waypoint_timeout: float = 55.0,
     final_tolerance: float = 0.16,
     max_speed: float = V_MAX,
 ) -> None:
@@ -1486,7 +1489,7 @@ class DualCarMission:
             self.car1,
             CAR1_SEARCH_PATH,
             final_tolerance=0.12,
-            max_speed=2.00,
+            max_speed=0.80,
         )
         observation_pos, observation_yaw = self.car1.pose()
         # 抵达观测位的总览截图：此时雷达点云、两车与目标都在画面里，
@@ -1506,9 +1509,9 @@ class DualCarMission:
             self.car2,
             [(float(provisional_goal[0]), float(provisional_goal[1]))],
             self.io.clock,
-            waypoint_timeout=32.0,
+            waypoint_timeout=80.0,
             final_tolerance=0.05,
-            max_speed=2.00,
+            max_speed=0.80,
         )
         print("[并发调度] 二号车已收到出发指令，开始连续前往目标区。")
         run_wait_concurrent(self.io, 0.15, car2_follower)
@@ -1576,9 +1579,9 @@ class DualCarMission:
             self.car1,
             [(float(measure_xy[0]), float(measure_xy[1]))],
             self.io.clock,
-            waypoint_timeout=18.0,
+            waypoint_timeout=36.0,
             final_tolerance=0.10,
-            max_speed=1.00,
+            max_speed=0.50,
         )
         run_followers_until_primary_done(self.io, car1_measure, car2_follower)
 
@@ -1599,9 +1602,9 @@ class DualCarMission:
                     self.car1,
                     [(float(retry_xy[0]), float(retry_xy[1]))],
                     self.io.clock,
-                    waypoint_timeout=18.0,
+                    waypoint_timeout=36.0,
                     final_tolerance=0.10,
-                    max_speed=0.50,
+                    max_speed=0.30,
                 )
                 run_followers_until_primary_done(
                     self.io, retry, car2_follower
@@ -1641,9 +1644,9 @@ class DualCarMission:
             self.car1,
             [(float(approach_xy[0]), float(approach_xy[1]))],
             self.io.clock,
-            waypoint_timeout=18.0,
+            waypoint_timeout=36.0,
             final_tolerance=0.12,
-            max_speed=1.00,
+            max_speed=0.50,
         )
         # 最后这段 0.56 m 直线入位期间关掉"绕行同伴车"：两车的最小间距由停靠规划
         # 保证（中心距 ≥ 0.82 m），而雷达一旦恰好在这时触发绕行，车会被带偏到抓取位
@@ -1794,10 +1797,10 @@ class DualCarMission:
         print("\n[阶段 6] 投放完成，两车开始倒车/返航。")
         reverse_exit = [
             ReverseStraightFollower(
-                self.car1, RADIATION_EXIT_Y, self.io.clock, max_speed=0.50
+                self.car1, RADIATION_EXIT_Y, self.io.clock, max_speed=0.30
             ),
             ReverseStraightFollower(
-                self.car2, RADIATION_EXIT_Y, self.io.clock, max_speed=0.50
+                self.car2, RADIATION_EXIT_Y, self.io.clock, max_speed=0.30
             ),
         ]
         reverse_min_gap = run_two_straight_reverses(self.io, reverse_exit)
@@ -1825,17 +1828,17 @@ class DualCarMission:
             self.car1,
             car1_return_path,
             self.io.clock,
-            waypoint_timeout=28.0,
+            waypoint_timeout=70.0,
             final_tolerance=0.10,
-            max_speed=2.00,
+            max_speed=0.80,
         )
         car2_return = PathFollower(
             self.car2,
             car2_return_path,
             self.io.clock,
-            waypoint_timeout=28.0,
+            waypoint_timeout=70.0,
             final_tolerance=0.10,
-            max_speed=2.00,
+            max_speed=0.80,
         )
         run_two_followers(
             self.io,
