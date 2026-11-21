@@ -29,6 +29,7 @@ from __future__ import annotations
 import numpy as np
 import rclpy
 from geometry_msgs.msg import Point
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import (
     DurabilityPolicy,
@@ -220,7 +221,9 @@ def main(args=None) -> None:
     node = TargetLocalizer()
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
+        # launch 发 SIGINT 时 rclpy 先关 context 再抛 ExternalShutdownException；
+        # 不接住会以退出码 1 结束，日志里留一条假故障。
         pass
     finally:
         node.destroy_node()

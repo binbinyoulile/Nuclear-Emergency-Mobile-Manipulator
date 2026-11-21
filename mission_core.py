@@ -63,6 +63,27 @@ K_POS = 3.50
 ACCEL_UP = 1.5
 ACCEL_DOWN = 2.0
 COMMAND_RAMP = 0.35
+
+# 三档速度（m/s）。改档位只改这里：各段 max_speed 与长直线段的航点超时都跟着走。
+CRUISE_SPEED = 0.80
+APPROACH_SPEED = 0.50
+REVERSE_SPEED = 0.30
+
+# 长直线段的航点超时按"这段要走多远"给，不按秒写死：
+#   [s] = PATH_TIMEOUT_BASE + PATH_TIMEOUT_SLACK × 距离 ÷ 速度
+# 系数 3.0 由实测标定：绕行、转弯降速与两端停靠都要吃时间——19 m 直线在 0.8 m/s 下
+# 理论 24 s，实际用掉约 80 s。速度档改小后超时自动放大，不会再出现"改了速度、旧超时
+# 把正常跑的车判成超时"（2026-11-21 踩过一次：0.8 档沿用 2.0 档的 22 s，seed 7 停在半路）。
+PATH_TIMEOUT_SLACK = 3.0
+PATH_TIMEOUT_BASE = 10.0
+# 短距离挪车段（0.3~1.5 m）的超时：由刹车、小步调整与等同伴主导，与速度无关，单独给常数。
+SHORT_MANEUVER_TIMEOUT = 36.0
+
+
+def leg_timeout(distance: float, speed: float) -> float:
+    """按距离预算给长直线段的航点超时，单位 s。"""
+    return PATH_TIMEOUT_BASE + PATH_TIMEOUT_SLACK * distance / max(speed, 1e-3)
+
 # 路径跟随允许的最大横摆角速度，单位 rad/s。
 # 纯追踪本身不限幅：5.3 m/s 时它会要求 7.6 rad/s，左右轮速差约 ±29 rad/s，实测直接
 # 把车甩飞（车体升到 0.59 m、落地悬空卡死）。所以横摆角速度在这里单独限到 1.5。
@@ -315,7 +336,6 @@ class PathFollower:
         self.index = 0
         self.waypoint_start = clock.now
         self.done = False
-        self.caution_logged = False
         self.avoid_active = False
         self.avoid_side = 0
         self.avoid_start = 0.0
@@ -487,15 +507,6 @@ class PathFollower:
                     )
                 bias = np.deg2rad(55.0 if car.lidar.front_min < 1.0 else 35.0)
                 alpha = wrap_angle(alpha + self.avoid_side * bias)
-                forward = min(forward, 0.85 if car.lidar.front_min < 1.0 else 1.40)
-            else:
-                if not self.caution_logged:
-                    print(
-                        f"  [{car.name}] adjacent obstacle "
-                        f"{car.lidar.front_min:.2f} m: radar caution, slow"
-                    )
-                    self.caution_logged = True
-                forward = min(forward, 1.40)
         elif self.avoid_active:
             print(f"  [{car.name}] obstacle cleared: resume direct goal")
             self.avoid_active = False
@@ -1490,7 +1501,7 @@ class DualCarMission:
             self.car1,
             CAR1_SEARCH_PATH,
             final_tolerance=0.12,
-            max_speed=0.80,
+            max_speed=CRUISE_SPEED,
         )
         observation_pos, observation_yaw = self.car1.pose()
         # 抵达观测位的总览截图：此时雷达点云、两车与目标都在画面里，
@@ -1510,9 +1521,9 @@ class DualCarMission:
             self.car2,
             [(float(provisional_goal[0]), float(provisional_goal[1]))],
             self.io.clock,
-            waypoint_timeout=80.0,
+            waypoint_timeout=leg_timeout(19.0, CRUISE_SPEED),
             final_tolerance=0.05,
-            max_speed=0.80,
+            max_speed=CRUISE_SPEED,
         )
         print("[并发调度] 二号车已收到出发指令，开始连续前往目标区。")
         run_wait_concurrent(self.io, 0.15, car2_follower)
@@ -1580,9 +1591,9 @@ class DualCarMission:
             self.car1,
             [(float(measure_xy[0]), float(measure_xy[1]))],
             self.io.clock,
-            waypoint_timeout=36.0,
+            waypoint_timeout=SHORT_MANEUVER_TIMEOUT,
             final_tolerance=0.10,
-            max_speed=0.50,
+            max_speed=APPROACH_SPEED,
         )
         run_followers_until_primary_done(self.io, car1_measure, car2_follower)
 
@@ -1603,9 +1614,9 @@ class DualCarMission:
                     self.car1,
                     [(float(retry_xy[0]), float(retry_xy[1]))],
                     self.io.clock,
-                    waypoint_timeout=36.0,
+                    waypoint_timeout=SHORT_MANEUVER_TIMEOUT,
                     final_tolerance=0.10,
-                    max_speed=0.30,
+                    max_speed=REVERSE_SPEED,
                 )
                 run_followers_until_primary_done(
                     self.io, retry, car2_follower
@@ -1645,9 +1656,9 @@ class DualCarMission:
             self.car1,
             [(float(approach_xy[0]), float(approach_xy[1]))],
             self.io.clock,
-            waypoint_timeout=36.0,
+            waypoint_timeout=SHORT_MANEUVER_TIMEOUT,
             final_tolerance=0.12,
-            max_speed=0.50,
+            max_speed=APPROACH_SPEED,
         )
         # 最后这段 0.56 m 直线入位期间关掉"绕行同伴车"：两车的最小间距由停靠规划
         # 保证（中心距 ≥ 0.82 m），而雷达一旦恰好在这时触发绕行，车会被带偏到抓取位
@@ -1798,10 +1809,10 @@ class DualCarMission:
         print("\n[阶段 6] 投放完成，两车开始倒车/返航。")
         reverse_exit = [
             ReverseStraightFollower(
-                self.car1, RADIATION_EXIT_Y, self.io.clock, max_speed=0.30
+                self.car1, RADIATION_EXIT_Y, self.io.clock, max_speed=REVERSE_SPEED
             ),
             ReverseStraightFollower(
-                self.car2, RADIATION_EXIT_Y, self.io.clock, max_speed=0.30
+                self.car2, RADIATION_EXIT_Y, self.io.clock, max_speed=REVERSE_SPEED
             ),
         ]
         reverse_min_gap = run_two_straight_reverses(self.io, reverse_exit)
@@ -1829,17 +1840,17 @@ class DualCarMission:
             self.car1,
             car1_return_path,
             self.io.clock,
-            waypoint_timeout=70.0,
+            waypoint_timeout=leg_timeout(16.0, CRUISE_SPEED),
             final_tolerance=0.10,
-            max_speed=0.80,
+            max_speed=CRUISE_SPEED,
         )
         car2_return = PathFollower(
             self.car2,
             car2_return_path,
             self.io.clock,
-            waypoint_timeout=70.0,
+            waypoint_timeout=leg_timeout(16.0, CRUISE_SPEED),
             final_tolerance=0.10,
-            max_speed=0.80,
+            max_speed=CRUISE_SPEED,
         )
         run_two_followers(
             self.io,
