@@ -232,7 +232,7 @@ class LidarSummary(Node):
             if delta > self._max_diff[field]:
                 self._max_diff[field] = delta
         if worst_here > 1e-3 and self._detail_left > 0:
-            # 临时排查：把这一帧两边的值都打出来，看是点集不同还是算法不同。
+            # 对照出现明显偏差时，把这一帧两边的值都打出来（只打前几帧，够定位）。
             self._detail_left -= 1
             ours_text = " ".join(f"{k}={float(getattr(ours, k)):.4f}" for k in FLOAT_FIELDS)
             ref_text = " ".join(f"{k}={float(getattr(ref, k)):.4f}" for k in FLOAT_FIELDS)

@@ -24,6 +24,12 @@ from __future__ import annotations
 
 import numpy as np
 
+# 扇区边界上的平局规则。仿真扫描器的方位角是 3° 的整数倍，30°/90°/150° 恰好有射线
+# 正落在边界上；而这些射线转成 float32 点云再反算 atan2，会偏 1e-7 rad 量级，落点就会
+# 在相邻扇区之间跳。这里给边界留 1e-6 rad（约 6e-5 度）的余量，按仿真侧的闭合规则
+# 各让一步：30° 归前向、90° 归左右、150° 归正后方，双边的半开半闭保持一致。
+AZ_EPS = 1e-6
+
 
 def summarize(
     points: np.ndarray,
@@ -83,11 +89,11 @@ def summarize(
         return empty
 
     in_range = keep & (rng <= detect_range)
-    front = in_range & (np.abs(az) <= front_half)
-    rear = in_range & (np.abs(az) >= np.pi - rear_half)
-    rear_wide = in_range & (np.abs(az) > np.pi / 2.0)
-    left = in_range & (az > front_half) & (az <= side_max)
-    right = in_range & (az >= -side_max) & (az < -front_half)
+    front = in_range & (np.abs(az) <= front_half + AZ_EPS)
+    rear = in_range & (np.abs(az) >= np.pi - rear_half - AZ_EPS)
+    rear_wide = in_range & (np.abs(az) > np.pi / 2.0 + AZ_EPS)
+    left = in_range & (az > front_half + AZ_EPS) & (az <= side_max + AZ_EPS)
+    right = in_range & (az >= -side_max - AZ_EPS) & (az < -front_half - AZ_EPS)
 
     result = dict(empty)
     front_idx = np.flatnonzero(front)

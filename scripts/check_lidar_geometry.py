@@ -122,6 +122,26 @@ def main() -> int:
             summarize(cloud(polar(170, 2.0)), **LIMITS),
             dict(none, rear_min=2.0, rear_clear=2.0),
         )
+        # 边界平局：恰好 30° 归前向，恰好 90° 归左侧、不算 rear_clear，
+        # 恰好 150° 归正后方。仿真侧的方位角就落在这几个角上，两边必须一致。
+        check(
+            "恰好 30°（前向边界）",
+            summarize(cloud(polar(30.0, 1.5)), **LIMITS),
+            dict(none, front_blocked=True, front_min=1.5,
+                 front_lateral=1.5 * float(np.sin(np.deg2rad(30))),
+                 front_lateral_signed=1.5 * float(np.sin(np.deg2rad(30)))),
+        )
+        check(
+            "恰好 90°（侧向边界）",
+            summarize(cloud(polar(90.0, 1.5)), **LIMITS),
+            dict(none, left_min=1.5),
+        )
+        check(
+            "恰好 150°（正后边界）",
+            summarize(cloud(polar(150.0, 1.9)), **LIMITS),
+            dict(none, rear_min=1.9, rear_clear=1.9),
+        )
+
         # 超出警戒距离 2.8 m 的回波不进任何扇区（但仍在量程内，不报错）。
         check("超出警戒距离", summarize(cloud(polar(0, 5.0)), **LIMITS), none)
 

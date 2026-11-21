@@ -118,7 +118,6 @@ class SimBridge(Node):
         self._cloud_enabled = bool(self.get_parameter("publish_cloud").value)
         # 上一次发点云时的雷达扫描时刻，用来把点云限幅到雷达自身频率（10 Hz）。
         self._cloud_scan_time = [-1e9, -1e9]
-        self._cloud_logged = 0
 
         self._load_scene()
         self._build_interfaces()
@@ -507,14 +506,6 @@ class SimBridge(Node):
         self._cloud_pubs[index].publish(
             point_cloud2.create_cloud_xyz32(header, lidar.hit_local.tolist())
         )
-        if self._cloud_logged % 10 == 0:
-            # 临时排查用：与感知节点的对照日志按时间戳对齐后可以判断点集是否相同。
-            self.get_logger().info(
-                f"云 {stamp.sec}.{stamp.nanosec:09d} {name} n={len(lidar.hit_local)} "
-                f"front={lidar.front_min:.4f} rear={lidar.rear_min:.4f} "
-                f"rear_clear={lidar.rear_clear:.4f}"
-            )
-        self._cloud_logged += 1
 
     def _publish_arm_joints(self, stamp: Time) -> None:
         msg = JointState()
