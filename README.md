@@ -144,6 +144,9 @@ mobile_manipulator/
 ├── scripts/run_matrix.py    # 多 seed 回归矩阵（CSV + 每 seed 日志）
 ├── scripts/compare_metrics.py  # 两份回归 CSV 逐指标对比
 ├── scripts/check_ports.py   # 两个后端是否都实现了全部端口（漏方法在构造时即报错）
+├── scripts/run_ros_matrix.py  # 轨道 B（ROS 多 seed）并行回归，CSV 与轨道 A 同构
+├── scripts/bench_chassis.py   # 架空台架：量轮径/轮距/死区/左右一致性（真车第一件事）
+├── scripts/check_lidar_geometry.py  # 雷达摘要的几何自检（扇区边界、地面门限等 15 个用例）
 ├── reports/                 # regression.csv（入库）、baselines/ 历史基线、logs/（本地忽略）
 ├── ros2_ws/src/             # ROS 2 五包：mm_msgs / mm_sim / mm_mission / mm_perception / mm_bringup
 ├── docs/screenshots/        # 5 张核心展示截图
