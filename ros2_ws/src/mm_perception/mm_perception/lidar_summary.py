@@ -173,10 +173,13 @@ class LidarSummary(Node):
 
     def _on_cloud(self, msg: PointCloud2) -> None:
         """收到一帧点云：算 8 个数，按模式发布或留待对照。"""
-        raw = point_cloud2.read_points(
-            msg, field_names=("x", "y", "z"), skip_nans=True
-        )
-        points = np.asarray(list(raw), dtype=np.float64).reshape(-1, 3)
+        # read_points 在 Humble 返回结构化数组，read_points_numpy 直接给 (N,3) 浮点数组。
+        points = np.asarray(
+            point_cloud2.read_points_numpy(
+                msg, field_names=("x", "y", "z"), skip_nans=True
+            ),
+            dtype=np.float64,
+        ).reshape(-1, 3)
         if points.shape[0] == 0:
             self._empty_clouds += 1
         summary = summarize(points, **self._limits)
