@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>mm_base</name>
+  <version>0.1.0</version>
+  <description>
+    真机底盘 CAN 驱动：按厂家 zeus_s2 协议发四轮转速、收编码器/故障反馈，
+    发布 /odom 与 /joint_states；带启动握手、看门狗与无硬件自检。
+  </description>
+  <maintainer email="binbinyoulile@users.noreply.github.com">Haobin Zhu</maintainer>
+  <license>MIT</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
