@@ -374,12 +374,26 @@ ALL 112 ASSERTIONS PASSED
 | `protocol.py` 不 import rclpy/socket、`selftest.py` 不 import rclpy | `selftest` 第 9 项 |
 | 所有 `.py` 语法（含 `base_node.py` 的 rclpy import 不执行） | `python -m py_compile` 通过 |
 
-### 需要真机 / ROS2 才能验证（当前均未验证）
+### 已在 Ubuntu 22.04 + ROS2 Humble 上验证（2026-11-23）
+
+| 项 | 结果 |
+|---|---|
+| `colcon build --packages-select mm_base --symlink-install` | 通过（1.7 s，无警告） |
+| `ros2 run mm_base selftest`（安装后的入口） | `ALL 112 ASSERTIONS PASSED` |
+| 节点启动（`backend:=loopback`） | 启动握手日志完整：清报警 → 使能 → 转速模式 → 「启动握手完成，进入运行」→「里程计已对齐四轮编码器」 |
+| 话题 | `/cmd_vel`、`/odom`、`/joint_states` 三个都在 |
+| `/cmd_vel` → `/odom` 端到端 | 发一次 `linear.x=0.5`，3 s 后 `/odom` 的 `position.x = 0.2480 m`。0.5 m/s × 0.5 s（`cmd_timeout` 到点清零）= 0.25 m，与预期一致 |
+| 指令超时保护 | 日志出现「/cmd_vel 超过 0.50 s 未更新，目标速度清零」 |
+
+**构建位置有坑**：VMware 共享目录 `/mnt/hgfs/share` 不支持符号链接，
+`--symlink-install` 会在 `os.symlink` 上抛 `OSError: 95 Operation not supported`。
+要么把工作区复制到原生路径（本次用 `/home/qq/mm_ws`）再构建，要么去掉 `--symlink-install`
+（但那样改代码后要重新 build）。
+
+### 需要真机才能验证（当前均未验证）
 
 | 项 | 为什么没验证 | 首跑怎么确认 |
 |---|---|---|
-| `rclpy` 节点能 import / `colcon build` | 本机没有 ROS2 | 在 Ubuntu 22.04 + ROS2 Humble 上 `colcon build --packages-select mm_base` |
-| `/cmd_vel` → `/odom` 端到端 | 需要 ROS2 运行时 | loopback 节点 + `ros2 topic pub` |
 | SocketCAN 打开 can0、收 0x601..0x604 | 没有 CAN 硬件 | `ip link` + `candump` + 节点启动日志 |
 | 驱动器使能/模式应答 0x700 的时序 | 需要真驱动器 | 启动握手日志；超时会列出缺失驱动器 |
 | 速度给定 1 LSB = 1 rpm | 源码只发过 0 | 小转速核对；不对就改 `SPEED_VALUE_RPM_PER_LSB` |
