@@ -73,7 +73,6 @@
   </default>
 
   <asset>
-    <mesh name="rg2_body" file="rg2_body.stl" />
     <material class="ur10e" name="black" rgba="0.033 0.033 0.033 1" />
     <material class="ur10e" name="jointgray" rgba="0.278 0.278 0.278 1" />
     <material class="ur10e" name="linkgray" rgba="0.82 0.82 0.82 1" />
@@ -186,7 +185,13 @@
 
     <body name="rg2_body" pos="0 0 0.05">
       <inertial pos="0 0 0.018" mass="0.65" diaginertia="0.001 0.001 0.001" />
-      <geom name="rg2_body_visual" class="rg2_visual" mesh="rg2_body" material="black" />
+      <!-- 本体外观用外廓方盒（真实 RG2 本体就是一个 72.5×36×118.2 mm 的铝块）。
+           早先用社区扫描网格 `body.stl`，它的原点未知、渲染出来的轮廓比 118 mm 矮一截，
+           和两根手指之间留出十几毫米的视觉空隙，看起来像"手指没连到机械臂"。外廓方盒
+           bottom 与指根对齐，画面里是连着的；物理仍由下面的 collision 盒负责。 -->
+      <geom name="rg2_body_visual" type="box" pos="0 0 0.018"
+            size="0.0363 0.018 0.0591" contype="0" conaffinity="0" group="2"
+            rgba="0.68 0.68 0.71 1" />
       <geom name="rg2_body_collision" type="box" pos="-0.001 0 0.018"
             size="0.037 0.019 0.060" group="3" rgba="0.5 0.5 0.5 0.15" />
 
@@ -213,9 +218,11 @@
              锛堟瘮鐩爣楂?43 mm锛夛紝澶圭埅鍦ㄦ潌涓婃柟绌哄悎銆?-->
         <geom name="rg2_jaw_pos_shank" type="box" pos="0.00575 0 0.0116"
               size="0.00575 0.009 0.0236" group="3" rgba="0.8 0.8 0.8 0.15" />
-        <geom name="rg2_jaw_pos_visual" type="box" pos="0.00575 0 0.0264"
-              size="0.0059 0.010 0.0384" contype="0" conaffinity="0" group="2"
-              rgba="0.75 0.75 0.78 1" />
+        <geom name="rg2_jaw_pos_visual" type="box" pos="0.00575 0 0.0174"
+              size="0.0059 0.010 0.0474" contype="0" conaffinity="0" group="2"
+              rgba="0.72 0.72 0.75 1" />
+        <!-- 真实指垫网格（flex_finger.stl）：原点未知、渲染对不齐，已退回下面的薄板视觉。 -->
+
       </body>
 
       <!-- ===== 鎸?-x锛氳酱鍙?-x锛屾墍浠?qpos 鍚屾牱鏄崐寮€搴?g ===== -->
@@ -231,9 +238,9 @@
               priority="1" rgba="0.9 0.75 0.3 0.45" />
         <geom name="rg2_jaw_neg_shank" type="box" pos="-0.00575 0 0.0116"
               size="0.00575 0.009 0.0236" group="3" rgba="0.8 0.8 0.8 0.15" />
-        <geom name="rg2_jaw_neg_visual" type="box" pos="-0.00575 0 0.0264"
-              size="0.0059 0.010 0.0384" contype="0" conaffinity="0" group="2"
-              rgba="0.75 0.75 0.78 1" />
+        <geom name="rg2_jaw_neg_visual" type="box" pos="-0.00575 0 0.0174"
+              size="0.0059 0.010 0.0474" contype="0" conaffinity="0" group="2"
+              rgba="0.72 0.72 0.75 1" />
       </body>
     </body>
   </body>

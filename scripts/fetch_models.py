@@ -57,29 +57,17 @@ ROBOTIQ_2F85_ASSETS = [
     "silicone_pad.stl",
     "spring_link.stl",
 ]
-# OnRobot RG2（实车夹爪）：Menagerie 里没有，取自社区 URDF 仓库的实物网格（MIT）。
-# 本地文件名 → 上游原始地址；源仓库没有直接放进 assets/ 的 meshdir，所以单独列一张表。
-RG2_ASSETS = {
-    "rg2_body.stl": (
-        "https://raw.githubusercontent.com/inria-paris-robotics-lab/onrobot_ros/"
-        "ros2/onrobot_description/meshes/rg2_v1/visual/body.stl"
-    ),
-}
-
-
 def source_url(filename: str) -> str:
     """根据文件名选择上游下载地址。
 
 参数：
-    filename: UR10e、Robotiq 2F-85 或 OnRobot RG2 的资产文件名。
+    filename: UR10e 或 Robotiq 2F-85 的资产文件名。
 返回：
     完整 HTTPS 原始文件 URL。
 关键假设：
-    文件名必须属于 UR10E_ASSETS、ROBOTIQ_2F85_ASSETS 或 RG2_ASSETS；未知名称会按 Robotiq
-    路径拼接并在下载时报 404。
+    文件名必须属于 UR10E_ASSETS 或 ROBOTIQ_2F85_ASSETS；未知名称会按 Robotiq 路径拼接并在下载时报 404。
+    （OnRobot RG2 不需要任何 STL：本体与手指都用基本几何体建，见 models/onrobot_rg2/rg2_subtree.xml。）
 重要性等级：C"""
-    if filename in RG2_ASSETS:
-        return RG2_ASSETS[filename]
     if filename in UR10E_ASSETS:
         return f"{BASE_URL}/universal_robots_ur10e/assets/{filename}"
     return f"{BASE_URL}/robotiq_2f85/assets/{filename}"
@@ -129,7 +117,7 @@ def main() -> None:
     args = parser.parse_args()
 
     ASSET_DIR.mkdir(parents=True, exist_ok=True)
-    for filename in UR10E_ASSETS + ROBOTIQ_2F85_ASSETS + list(RG2_ASSETS):
+    for filename in UR10E_ASSETS + ROBOTIQ_2F85_ASSETS:
         fetch(filename, force=args.force)
     print(f"assets ready: {ASSET_DIR}")
 

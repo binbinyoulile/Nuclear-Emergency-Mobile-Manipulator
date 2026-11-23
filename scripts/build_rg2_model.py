@@ -126,10 +126,7 @@ def convert(src: str, subtree: str) -> tuple[str, list[str]]:
         src = src[: m.start(2)] + attrs + src[m.end(2):]
         log.append(f"{body}: {m_e} -> {m_10} kg（惯量 ×{ratio:.3f}）")
 
-    # 7) 资源：RG2 网格 + 视觉默认类
-    src = src.replace(
-        "  <asset>\n", '  <asset>\n    <mesh name="rg2_body" file="rg2_body.stl" />\n', 1
-    )
+    # 7) 资源：RG2 视觉默认类（本体与手指改成基本几何体后，已不需要任何 STL 网格）
     src = src.replace(
         '    <default class="visual">',
         '    <default class="rg2_visual">\n'
@@ -143,9 +140,6 @@ def convert(src: str, subtree: str) -> tuple[str, list[str]]:
 
 def main() -> None:
     subtree = (RG2_DIR / "rg2_subtree.xml").read_text(encoding="utf-8")
-
-    ASSETS.mkdir(exist_ok=True)
-    shutil.copyfile(RG2_DIR / "meshes" / "body.stl", ASSETS / "rg2_body.stl")
 
     for src_name, dst_name in JOBS:
         src, log = convert((MODEL_DIR / src_name).read_text(encoding="utf-8"), subtree)
