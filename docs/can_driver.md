@@ -217,6 +217,12 @@ v_R = -(v + ω·0.61/2)
 - CAN 总线 1000 kbps、两端 120 Ω 终端电阻（CAN 常规要求，厂家文档未逐条写）；
 - 先跑 Windows 自检，再跑 loopback，最后才接真 CAN。
 
+> **一条命令的简化版**：`scripts/bench_real.py` 把下面第 1~4 步（拉 can0 → 启动握手 →
+> 四轮方向 → 里程计）串成一次自检，每步打印期望/实测/合格线并存 CSV：
+> `sudo python3 scripts/bench_real.py --backend socketcan --can can0`。
+> 想在没车时先验脚本自身逻辑：`python scripts/bench_real.py --backend loopback`。
+> 本节下面保留的是手工步骤与排查细节，出问题时对照用。
+
 ### 1. 拉起 can0
 
 ```bash

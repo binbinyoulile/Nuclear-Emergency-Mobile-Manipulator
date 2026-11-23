@@ -47,7 +47,9 @@ dist/
 secrets/
 credentials*
 
-# ���� worktree��worktree_create / git worktree add��
+# ���� worktree��worktree_create / git worktree add��
 .dsh-worktrees/
 reports/diag/
 reports/rg2_seeds0_20.csv
+# 真机自检的每次输出都是当次现场记录，不入库（合格线在脚本里）
+reports/bench_real_*.csv

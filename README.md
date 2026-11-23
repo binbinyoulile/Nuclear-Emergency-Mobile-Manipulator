@@ -298,6 +298,7 @@ geom 一一对应，改一处必须同步另一处。
 
 | 东西 | 干什么 | 怎么用 |
 |---|---|---|
+| `scripts/bench_real.py` | **真机首跑自检**：CAN 接口/位速率 → 启动握手 → 单轮反馈频率 → 四轮方向 → 起转门限 → 里程计直线吻合度 → 雷达/关节话题，每步打印期望/实测/合格线并存 CSV | 先干跑：`python scripts/bench_real.py --backend loopback`（不需要车）；真机（**轮子先架空**）：`sudo python3 scripts/bench_real.py --backend socketcan --can can0`，量过实际距离就加 `--measured 1.982` |
 | `ros2_ws/src/mm_base` | **真车底盘 CAN 驱动**：厂家 `0x101–0x104`/`0x601–0x604` 协议、125 Hz 速度环、四轮差速里程计、超时保护 | 先在虚拟机上 `ros2 run mm_base selftest`（112 条断言，无需硬件）；节点用 `-p backend:=loopback` 空跑，上车换 `-p backend:=socketcan -p can_interface:=can0`。细节见 `docs/can_driver.md` |
 | `scripts/bench_chassis.py` | 架空/落地量死区、真实轮径（含打滑）、有效轮距、左右一致性、原地转效率 | `python scripts/bench_chassis.py --backend sim` 先自检；真车后端接上后换 `--backend real` |
 | `docs/real_machine_calibration.md` | 每个安装量要测到多准、为什么、按什么顺序 | 标定时照表执行（轮径 0.5%、相机位置 2 mm / 姿态 0.1°、雷达位置 5 cm） |
