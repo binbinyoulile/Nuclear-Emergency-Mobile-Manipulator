@@ -259,8 +259,13 @@ LIDAR_SIDE_MAX = np.deg2rad(90.0)
 LIDAR_REAR_HALF = np.deg2rad(30.0)
 
 # 工具自旋候选角：抓取时在可达性等价解中挑最优。
+# 角度以 pinch 站点自身坐标系为准。候选必须让**两指开合方向垂直于杆轴**（杆沿世界 x，
+# 所以开合方向要落在世界 ±y）：2F-85 的 pinch 站点把开合方向定在站点 +y 上，±90° 正好；
+# OnRobot RG2 的指沿站点 **+x** 开合（见 models/onrobot_rg2/rg2_subtree.xml），必须改用
+# 0°/180°。用错时两指沿杆轴张合，下降时指垫直接压在杆身上，pinch 停在离地 20 mm
+# （实测），夹爪空合。切回 2F-85 时这一行也要一起改回。
 GRASP_SPIN_AXIS = "z"
-GRASP_SPIN_CANDIDATES_DEG = (90.0, -90.0)
+GRASP_SPIN_CANDIDATES_DEG = (0.0, 180.0)
 
 # 调试开关：DUAL_TRACE=1 时按 0.25 s 输出路径跟随器内部状态。
 _TRACE = os.environ.get("DUAL_TRACE") == "1"

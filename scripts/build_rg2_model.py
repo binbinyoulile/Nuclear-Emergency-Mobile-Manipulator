@@ -39,11 +39,12 @@ MASS_UR10 = {
 
 FINGER_ACT = (
     '    <general name="fingers_actuator" joint="rg2_jaw_pos_joint" ctrlrange="0.0005 0.055"\n'
-    '             forcerange="-40 40" gainprm="4000 0 0" biasprm="0 -4000 -20" />\n'
+    '             forcerange="-40 40" gainprm="24000 0 0" biasprm="0 -24000 -20"\n'
+    '             biastype="affine" />\n'
 )
 
 RG2_EQ = """<equality>
-    <joint joint1="rg2_jaw_pos_joint" joint2="rg2_jaw_neg_joint" polycoef="0 1 0 0 0" solimp="0.95 0.99 0.001" solref="0.005 1" />
+    <joint joint1="rg2_jaw_pos_joint" joint2="rg2_jaw_neg_joint" polycoef="0 1 0 0 0" solimp="0.99 0.999 0.0001" solref="0.001 1" />
   </equality>"""
 
 

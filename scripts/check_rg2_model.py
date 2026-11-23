@@ -79,6 +79,82 @@ def selftest() -> None:
           "\n    垫心与 pinch 同高（dz≈0）→ 抓取高度必须让 pinch 离地至少 14.75 mm。")
 
 
+def grip_check() -> None:
+    """夹住 Ø6 圆棒的力与保持性自检（生成后必须过，否则搬运中杆会滑掉）。
+
+    真实 RG2 是恒力夹持，位置伺服只能靠穿透量产生力：刚度不够时稳态力只有 9 N，
+    杆会以约 10 mm/s 匀速滑出（历史上就是这么丢的）。这里断言两条：
+      1. 稳态夹持力接近 40 N 上限（说明伺服确实饱和，模拟的是恒力）；
+      2. 后 1 s 内杆相对夹持点的位移 < 3 mm（说明没有持续滑移）。
+    """
+    import os
+    import sys
+
+    sys.path.insert(0, str(ROOT))
+    os.environ.setdefault("MOBILE_SCENE_PATH", str(DST_SCENE))
+    import mobile_pick_place as mpp
+
+    m, d = mpp.MODEL, mujoco.MjData(mpp.MODEL)
+    pinch = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_SITE, "pinch")
+    jaws = [
+        int(m.jnt_qposadr[mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_JOINT, n)])
+        for n in ("rg2_jaw_pos_joint", "rg2_jaw_neg_joint")
+    ]
+    d.qpos[mpp.ARM_QADR] = mpp.CARRY_Q
+    d.qpos[jaws] = [0.055, 0.055]
+    mujoco.mj_forward(m, d)
+    pinch_pos = d.site_xpos[pinch].copy()
+    xmat = d.site_xmat[pinch].reshape(3, 3)
+    rod_axis = xmat[:, 1]                       # 指沿站点 x 开合，杆轴取站点 y
+    rot = np.column_stack([rod_axis, np.cross(xmat[:, 2], rod_axis), xmat[:, 2]])
+    quat = np.zeros(4)
+    mujoco.mju_mat2Quat(quat, rot.flatten())
+    d.qpos[mpp.OBJ_QADR : mpp.OBJ_QADR + 3] = pinch_pos + 0.0162 * rod_axis
+    d.qpos[mpp.OBJ_QADR + 3 : mpp.OBJ_QADR + 7] = quat
+    mujoco.mj_forward(m, d)
+
+    scratch = mujoco.MjData(m)
+    arm_kp = float(m.actuator_gainprm[mpp.ARM_ACT[0], 0])
+    settle = int(3.0 / m.opt.timestep)
+    for _ in range(settle):
+        scratch.qpos[:] = d.qpos
+        scratch.qpos[mpp.ARM_QADR] = mpp.CARRY_Q
+        scratch.qvel[:] = 0.0
+        mujoco.mj_forward(m, scratch)
+        d.ctrl[mpp.ARM_ACT] = mpp.CARRY_Q + scratch.qfrc_bias[mpp.ARM_DADR] / arm_kp
+        d.ctrl[mpp.FINGER_ACT] = float(mpp.FINGER_CLOSE)
+        mujoco.mj_step(m, d)
+    force = abs(float(d.actuator_force[mpp.FINGER_ACT]))
+    mark = d.qpos[mpp.OBJ_QADR : mpp.OBJ_QADR + 3].copy()
+    for _ in range(int(1.0 / m.opt.timestep)):
+        scratch.qpos[:] = d.qpos
+        scratch.qpos[mpp.ARM_QADR] = mpp.CARRY_Q
+        scratch.qvel[:] = 0.0
+        mujoco.mj_forward(m, scratch)
+        d.ctrl[mpp.ARM_ACT] = mpp.CARRY_Q + scratch.qfrc_bias[mpp.ARM_DADR] / arm_kp
+        d.ctrl[mpp.FINGER_ACT] = float(mpp.FINGER_CLOSE)
+        mujoco.mj_step(m, d)
+    creep = float(
+        np.linalg.norm(d.qpos[mpp.OBJ_QADR : mpp.OBJ_QADR + 3] - mark)
+    )
+    pads = sum(
+        1
+        for i in range(d.ncon)
+        if "rg2_jaw" in (m.geom(d.contact[i].geom1).name or "")
+        or "rg2_jaw" in (m.geom(d.contact[i].geom2).name or "")
+    )
+    jaw = [round(float(d.qpos[a]), 4) for a in jaws]
+    print(
+        f"\n夹持自检：稳态力 {force:.1f} N，后 1 s 位移 {creep * 1000:.1f} mm，"
+        f"指爪 qpos={jaw}，指垫接触 {pads} 个"
+    )
+    assert pads >= 2, "指垫没夹到杆：检查 pinch 站点开合方向与指杆几何"
+    assert force > 30.0, f"稳态夹持力只有 {force:.1f} N，伺服没饱和，搬运中杆会滑出"
+    assert creep < 0.003, f"杆在 1 s 内滑了 {creep * 1000:.1f} mm，夹不住"
+    print("  通过：夹持力饱和、无持续滑移")
+
+
 if __name__ == "__main__":
     make_scene()
     selftest()
+    grip_check()

@@ -46,3 +46,8 @@ dist/
 *.key
 secrets/
 credentials*
+
+# ÈÎÎñ worktree£¨worktree_create / git worktree add£©
+.dsh-worktrees/
+reports/diag/
+reports/rg2_seeds0_20.csv
