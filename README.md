@@ -158,6 +158,7 @@ mobile_manipulator/
 ├── scripts/run_matrix.py    # 多 seed 回归矩阵（CSV + 每 seed 日志）
 ├── scripts/compare_metrics.py  # 两份回归 CSV 逐指标对比
 ├── scripts/check_ports.py   # 两个后端是否都实现了全部端口（漏方法在构造时即报错）
+├── scripts/check_docs.py    # 文档一致性断言：夹取高度/速度三档/ROS 包数是否与代码一致（改数据后跑一下）
 ├── scripts/check_rg2_model.py  # RG2 模型自检：关节行程、稳态夹持力、夹持后滑移
 ├── scripts/run_ros_matrix.py  # 轨道 B（ROS 多 seed）并行回归，CSV 与轨道 A 同构
 ├── scripts/bench_chassis.py   # 架空台架：量轮径/轮距/死区/左右一致性（真车第一件事）
