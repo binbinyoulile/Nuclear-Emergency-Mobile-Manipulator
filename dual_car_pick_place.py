@@ -561,15 +561,43 @@ def detect_steel_target(
     height = world[..., 2] - (
         coef[0] * world[..., 0] + coef[1] * world[..., 1] + coef[2]
     )
-    band = valid & (height > STEEL_HEIGHT_MIN) & (height < STEEL_HEIGHT_MAX)
-    if not band.any():
-        return None
+    # 诊断导出（DUAL_DUMP_VISION=1 时）：深度图与"离地高度"图各存一张，
+    # 用来判断"杆到底在不在画面里"，而不是靠猜。不参与任何判定。
+    if os.environ.get("DUAL_DUMP_VISION") == "1":
+        diag = HERE / "reports" / "diag"
+        diag.mkdir(parents=True, exist_ok=True)
+        for name, img in (
+            ("vision_depth", ((1.0 - np.clip(depth, 0.0, 3.0) / 3.0) * 255).astype(np.uint8)),
+            ("vision_height", (np.clip(height, -0.02, 0.10) / 0.10 * 255).astype(np.uint8)),
+        ):
+            ok, buf = cv2.imencode(".png", img)
+            if ok:
+                (diag / f"{name}.png").write_bytes(buf.tobytes())
     roi = (
         (world[..., 0] > STEEL_ROI_X[0])
         & (world[..., 0] < STEEL_ROI_X[1])
         & (world[..., 1] > STEEL_ROI_Y[0])
         & (world[..., 1] < STEEL_ROI_Y[1])
     )
+    band = valid & (height > STEEL_HEIGHT_MIN) & (height < STEEL_HEIGHT_MAX)
+    if not band.any():
+        if verbose:
+            inroi = roi & valid
+            h_roi = height[inroi]
+            amin = f"{h_roi.min() * 1000:.1f}" if h_roi.size else "n/a"
+            amax = f"{h_roi.max() * 1000:.1f}" if h_roi.size else "n/a"
+            print(
+                f"  [视觉] 离地带为空（near={int(near.sum())} 点，"
+                f"平面 z={coef[2]:+.4f}，搜索区内有效点={int(inroi.sum())}，"
+                f"其中离地 {amin}~{amax} mm）"
+            )
+            wv = world[valid]
+            print(
+                f"    视场覆盖 x={wv[:, 0].min():+.2f}~{wv[:, 0].max():+.2f} "
+                f"y={wv[:, 1].min():+.2f}~{wv[:, 1].max():+.2f} "
+                f"z={wv[:, 2].min():+.3f}~{wv[:, 2].max():+.3f}"
+            )
+        return None
     count, labels, stats, _ = cv2.connectedComponentsWithStats(
         band.astype(np.uint8), connectivity=8
     )
@@ -584,6 +612,21 @@ def detect_steel_target(
     if best < 0:
         if verbose:
             print(f"  [视觉] 离地带内没有落在搜索区里的连通域（候选 {count - 1} 个）")
+            # 诊断：把够大的候选连中心一起打出来。区分"杆根本没分割出来"和
+            # "分割到了但世界坐标偏出搜索区"——后者说明相机位姿/手眼有偏差。
+            for label in range(1, count):
+                area = int(stats[label, cv2.CC_STAT_AREA])
+                if area < STEEL_MIN_PIXELS:
+                    continue
+                c = world[labels == label][:, :2].mean(axis=0)
+                inside = (
+                    STEEL_ROI_X[0] < c[0] < STEEL_ROI_X[1]
+                    and STEEL_ROI_Y[0] < c[1] < STEEL_ROI_Y[1]
+                )
+                print(
+                    f"    候选 area={area} 像素 中心=({c[0]:+.3f}, {c[1]:+.3f}) "
+                    f"在搜索区内={inside}"
+                )
         return None
 
     points = world[labels == best]

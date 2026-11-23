@@ -90,10 +90,14 @@ def leg_timeout(distance: float, speed: float) -> float:
 MAX_YAW_RATE = 1.5
 
 # 原地转向的轮速命令，单位 rad/s。
-# 实测 ±2.5 rad/s 低于轮胎静摩擦门限：四轮原地打滑、车身偏航只有 0.026 rad/s，
-# ±8.0 rad/s 时约为 1.32 rad/s，且横向滑移小；再高会明显平移离开对准点。
-# 注意：8 rad/s × 轮半径 0.1525 m = 1.22 m/s，已超真车空载上限 1.0 m/s。真机上摆正必须
-# 降到 ≤5 rad/s，且只用于补几度偏航（这批种子该分支从未触发）。
+# 108 kg 时代实测：±2.5 rad/s 低于轮胎静摩擦门限（四轮空转、偏航只有 0.026 rad/s），
+# ±8.0 rad/s 时约 1.32 rad/s，再高会明显平移离开对准点。
+# 按实车布置整车加到 141.6 kg 后，8 rad/s 只能转过去一部分（连续三次摆正残差
+# 35.7° → 6.9° → 6.4° 能收敛，但也有种子停在 18~21° 不动）；试过 12 rad/s
+# （按正压力比例补偿静摩擦门限），反而过冲到 yaw −1.7 rad、横向滑出 0.3 m，
+# 所以留 8 rad/s，转不齐的情形由"测量位失败退回观测位粗定位"兜住。
+# 真机上限仍是空载 1.0 m/s，8 rad/s × 0.1525 = 1.22 m/s 只存在于仿真；真机摆正必须
+# 按实车实测重标，且只用于补几度偏航。
 SKID_TURN_WHEEL_SPEED = 8.0
 # 原地转向起转与收尾的轮速斜坡时间，单位 s。
 # 直接写 0 时车身仍带约 1.5 rad/s 横摆角速度，轮胎被瞬间拖停：实测定位点被
@@ -234,10 +238,15 @@ ROD_RADIUS = 0.003                      # 粗端半径
 BUCKET_EDGE_MARGIN = 0.003              # 端点离桶口内壁至少留这么多
 BUCKET_FLOOR_MARGIN = 0.02              # 端点允许低于桶底平面的量
 
-# 一号车停车距离：抓取位按机械臂可达性取 0.85 m；近距测量位取 1.41 m（腕部相机
-# 离目标约 1.0 m，落在 D435i 28.5° 固定下俯的可见带内），详见 DualCarMission.run 中的注释。
+# 一号车停车距离：抓取位按机械臂可达性取 0.85 m；近距测量位取 1.85 m，腕部相机
+# 离目标约 1.26 m（视场中心线附近），详见 DualCarMission.run 中的注释。
+# 为什么不是早期的 1.41 m：机械臂座前移到平板中心（+0.188 m）并抬高 56 mm 后，相机跟着
+# 前移、抬高，杆在画面里的位置整体下移——1.55 m 时实测视场最近只到车前方 1.53 m
+# （再近就被夹爪自身挡住），Ø6 细杆正好卡在画面最底边，深度图上只剩 1 px 宽、连通域断开，
+# 报"离地带为空 / 没有落在搜索区里的连通域"。1.85 m 把杆拉回视场中部，与观测位（2.1 m）
+# 相比仍是更近的一档。
 GRASP_STANDOFF_Y = 0.85
-MEASURE_STANDOFF_Y = 1.41
+MEASURE_STANDOFF_Y = 1.85
 
 # ---------------------------------------------------------------------------
 # 激光雷达：任务层自己解读的四个扇区定义 + 扫描周期。
@@ -1651,6 +1660,33 @@ class DualCarMission:
         )
         run_followers_until_primary_done(self.io, car1_measure, car2_follower)
 
+        # 测量位拍照前先把车头摆正：臂座前移到平板中心后，腕部相机跟着前移，
+        # 相机视野对车头朝向更敏感——长距离绕行 + 整车增重后残余偏航能到 60° 以上，
+        # 腕部相机变成"斜着看"，实测视场里只剩空地，杆完全不在画面里（深度图上什么都没有）。
+        # 在观测位（y≈18.5）摆正的代价是滑移几厘米，但测量位的杆世界坐标由视觉给出、
+        # 不依赖车位置精度，所以这里值得转。整车 141 kg 后差速原地转的效率比 108 kg 时更低
+        # （同样轮速下横摆只有原来的六成），单次转常常转不到位，所以最多迭代三次。
+        for attempt in range(3):
+            _, car1_yaw_here = self.car1.pose()
+            measure_align_error = abs(wrap_angle(CAR_START_YAW - car1_yaw_here))
+            if measure_align_error <= np.deg2rad(5.0):
+                break
+            print(
+                f"  [CAR1] 测量位前残余偏航 {np.rad2deg(measure_align_error):.1f}°"
+                f"（第 {attempt + 1} 次摆正）"
+            )
+            aligner = SkidTurnFollower(
+                self.car1,
+                CAR_START_YAW,
+                self.io.clock,
+                timeout=8.0,
+                ramp_time=SKID_TURN_SPINDOWN_TIME,
+            )
+            run_turn_with_secondary(self.io, aligner, car2_follower)
+
+        # 无论转没转，都等车停稳再拍帧（差速原地转收尾时车体仍有残余速度）。
+        run_wait_concurrent(self.io, 0.2, car2_follower)
+
         print("\n[视觉识别] 近距复测：由粗定位把车开到测量位，再采一帧精定位。")
         target = None
         for attempt in range(2):
@@ -1659,7 +1695,16 @@ class DualCarMission:
                 break
             except (RuntimeError, TimeoutError) as exc:
                 if attempt == 1:
-                    raise
+                    # 测量位两帧都没拍到杆：退回观测位的粗定位结果。实车布置下
+                    # 141.6 kg 的车差速原地转不可靠，车头可能仍偏十几度，腕部相机
+                    # 就斜着看、杆落到画面外。粗定位在 2.1 m 处的实测误差 1.1~1.7 mm，
+                    # 抓取的 xy 容差是厘米级，够用——比让整条任务失败合理。
+                    print(
+                        f"[视觉识别] 测量位重试仍失败（{exc}），退回观测位粗定位 "
+                        f"({coarse[0]:.3f}, {coarse[1]:.3f})"
+                    )
+                    target = coarse.copy()
+                    break
                 # 粗定位偏 0.3 m 以上时，测量位会停得离目标过近，杆落到相机下视场
                 # 之外（画面下缘只剩细端、又落在搜索区外）。后退 0.35 m 再采一帧。
                 print(f"[视觉识别] 测量位识别失败（{exc}），后退 0.35 m 重试")

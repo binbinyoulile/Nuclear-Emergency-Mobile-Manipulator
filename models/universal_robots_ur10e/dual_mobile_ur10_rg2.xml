@@ -145,12 +145,19 @@
         <geom name="chassis_deck" type="box" size="0.40 0.31 0.01"
               pos="0 0 0.39556" mass="0" group="2" rgba="0.20 0.24 0.28 1"
               contype="0" conaffinity="0" />
-
-        <geom name="arm_pedestal" type="cylinder" size="0.09 0.005"
-              pos="0 0 0.40556" mass="0" group="2"
-              rgba="0.12 0.20 0.28 1" contype="0" conaffinity="0" />
-
-        <!-- Front wheels have steering pivots; all four wheels roll on the same
+      <geom name="car1_rail_l" type="box" pos="0.165 0.13 0.42156"
+            size="0.185 0.02 0.018" mass="2.72" contype="0" conaffinity="0"
+            group="2" rgba="0.55 0.57 0.60 1" />
+      <geom name="car1_rail_r" type="box" pos="0.165 -0.13 0.42156"
+            size="0.185 0.02 0.018" mass="2.72" contype="0" conaffinity="0"
+            group="2" rgba="0.55 0.57 0.60 1" />
+      <geom name="car1_arm_plate" type="box" pos="0.188 0 0.44956"
+            size="0.09 0.15 0.01" mass="2.92" contype="0" conaffinity="0"
+            group="2" rgba="0.72 0.74 0.78 1" />
+      <geom name="car1_control_box" type="box" pos="-0.23 0 0.53956"
+            size="0.21 0.23 0.136" mass="25" contype="0" conaffinity="0"
+            group="2" rgba="0.82 0.82 0.80 1" />
+<!-- Front wheels have steering pivots; all four wheels roll on the same
              body so the differential controller is mechanically meaningful. -->
         <!-- 前轮带转向节（控制器的运动学模型使用转向角 + 轮速差）；
              真车标注为四轮差速转向，去掉转向节后实测原地转只有 0.13 rad/s、
@@ -205,7 +212,7 @@
                 solimp="0.95 0.99 0.001" />
         </body>
 
-        <body name="base" pos="0 0 0.40356" quat="0 0 0 -1" childclass="ur10e">
+        <body name="base" pos="0.188 0 0.45956" quat="0 0 0 -1" childclass="ur10e">
       <inertial mass="4.0" pos="0 0 0" diaginertia="0.00610633089 0.00610633089 0.01125" />
       <geom mesh="base_0" material="black" class="visual" />
       <geom mesh="base_1" material="jointgray" class="visual" />
