@@ -263,17 +263,25 @@ def measure_pivot(chassis, omega: float) -> dict:
     return {"omega": omega, "yaw_rate": stats["yaw_rate"]}
 
 
-def evaluate(result: dict, nominal_radius: float, nominal_track: float) -> list[str]:
-    """按判据检查测量结果，返回问题清单（空表示通过）。
+def evaluate(
+    result: dict, nominal_radius: float, nominal_track: float
+) -> tuple[list[str], list[str]]:
+    """按判据检查测量结果，返回（问题清单，提示清单）。只有问题影响退出码。
 
     参数：
         result: 全部测量结果。
         nominal_radius: 模型轮半径，m。
         nominal_track: 模型轮距，m。
     返回：
-        问题描述列表。
+        problems（空表示通过）与 notes（只提示、不判失败）。
+    关键判断：
+        轮距**不判定**。厂家说明书自己写明运行参数里的 `wheel_track_4wd` 是标定值，
+        "不是真实车体轮距，约为真实的 2 倍多"（滑移补偿）；我们这条圆弧法量的是几何
+        轮距，两者本来就不该相等，用它去判合格会一直误报。量不出来或被滑移污染时，
+        由"原地转"那一项兜住"根本转不动"这种情况。
     重要性等级：B"""
-    problems = []
+    problems: list[str] = []
+    notes: list[str] = []
     radius = float(np.mean([row["radius_odom"] for row in result["radius"]["rows"]]))
     if abs(radius / nominal_radius - 1.0) > RADIUS_TOL:
         problems.append(
@@ -282,13 +290,19 @@ def evaluate(result: dict, nominal_radius: float, nominal_track: float) -> list[
         )
     track = result["track"]["track_eff"]
     if track is None:
-        pass  # 量不出来已在报告里给了原因；原地转那项会兜住"根本转不动"
-    elif abs(track / nominal_track - 1.0) > TRACK_TOL:
-        problems.append(
-            f"有效轮距 {track:.3f} m 与模型 {nominal_track:.3f} 差 "
-            f"{abs(track / nominal_track - 1.0) * 100:.0f}%（>{TRACK_TOL * 100:.0f}%），"
-            "先确认是打滑还是编码器换算错"
+        notes.append("轮距未测（圆弧段没转起来；2D/滑移场景常见，不影响其它判据）")
+    else:
+        ratio = track / nominal_track
+        notes.append(
+            f"圆弧法几何轮距 {track:.3f} m（模型 {nominal_track:.3f}，比值 {ratio:.2f}）；"
+            "厂家驱动里的 wheel_track_4wd 是滑移补偿后的标定值、约为几何值的 2 倍，"
+            "两者不要混用"
         )
+        if abs(ratio - 1.0) > TRACK_TOL:
+            notes.append(
+                f"几何轮距与模型差 {abs(ratio - 1.0) * 100:.0f}%，"
+                "先确认是测量打滑还是编码器换算错，再决定要不要改驱动参数"
+            )
     if abs(result["pivot"]["yaw_rate"]) < PIVOT_MIN_YAW_RATE:
         problems.append(
             f"原地转只有 {result['pivot']['yaw_rate']:.3f} rad/s"
@@ -302,7 +316,7 @@ def evaluate(result: dict, nominal_radius: float, nominal_track: float) -> list[
     drift = max(abs(row["yaw_drift_deg"]) for row in result["radius"]["rows"])
     if drift > 5.0:
         problems.append(f"直行偏航漂移 {drift:.1f}°/s，左右轮或编码器有系统偏差")
-    return problems
+    return problems, notes
 
 
 def main() -> int:
@@ -332,8 +346,9 @@ def main() -> int:
     radius_mean = float(np.mean([row["radius_odom"] for row in result["radius"]["rows"]]))
     result["track"] = measure_track(chassis, 2.0, 0.6, radius_mean)
     result["pivot"] = measure_pivot(chassis, 8.0)
-    problems = evaluate(result, WHEEL_RADIUS, WHEEL_TRACK)
+    problems, notes = evaluate(result, WHEEL_RADIUS, WHEEL_TRACK)
     result["problems"] = problems
+    result["notes"] = notes
 
     print("\n死区（指令 rad/s → 1 s 位移 m）：")
     for row in result["deadband"]["rows"]:
@@ -361,14 +376,17 @@ def main() -> int:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
+    if notes:
+        print("\n提示（不判定）：")
+        for item in notes:
+            print(f"  - {item}")
+
     if problems:
         print("\n不通过：")
         for item in problems:
             print(f"  - {item}")
-    elif result["track"]["track_eff"] is None:
-        print("\n通过：轮径、死区、左右一致性与原地转都在判据内（轮距未测，原因见上）")
     else:
-        print("\n通过：轮径、轮距、死区、左右一致性与原地转都在判据内")
+        print("\n通过：轮径、死区、左右一致性与原地转都在判据内（轮距只记录、不判定）")
     print(f"json written: {out_path}")
     return 1 if problems else 0
 
