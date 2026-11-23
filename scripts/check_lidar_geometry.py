@@ -31,7 +31,11 @@ from mission_core import (  # noqa: E402
     LIDAR_REAR_HALF,
     LIDAR_SIDE_MAX,
 )
-from mm_perception.lidar_geometry import summarize  # noqa: E402
+from mm_perception.lidar_geometry import (  # noqa: E402
+    scan_to_points,
+    summarize,
+    summarize_scan,
+)
 
 LIMITS = dict(
     detect_range=LIDAR_DETECT_RANGE,
@@ -184,6 +188,53 @@ def main() -> int:
         check("横向净空按 距离×sin", got, dict(front_lateral_signed=expected_signed))
         if abs(got["front_lateral_signed"] - point[1]) < 1e-3:
             raise AssertionError("横向净空退化成 y 坐标，z≠0 时会偏")
+
+        # ---- 2D 单线扫描（真车思岚 A2 的输入形态）----
+        # 真车没有 z：扫描点摊在 z=0 平面上，所以同一个方位/距离必须与三维输入给同一组数。
+        scan_limits = dict(LIMITS)
+        check(
+            "2D 正前方 1 m",
+            summarize_scan([1.0], angle_min=0.0, angle_increment=0.0, **scan_limits),
+            dict(none, front_blocked=True, front_min=1.0, front_lateral=0.0),
+        )
+        # 方位分辨率按 A2 的 0.225° 取，右侧 45° 处放一个 1.5 m 的回波。
+        step = float(np.deg2rad(0.225))
+        count = int(round(2 * np.pi / step))
+        ranges = np.full(count, np.inf)
+        index = int(round((np.deg2rad(-45.0) + np.pi) / step))
+        ranges[index] = 1.5
+        check(
+            "2D 右侧 45°",
+            summarize_scan(ranges, angle_min=-np.pi, angle_increment=step, **scan_limits),
+            dict(none, right_min=1.5),
+        )
+        # 无效回波（inf / NaN / 0）必须被丢掉；量程上限之外的也要丢。
+        invalid = summarize_scan(
+            [np.inf, np.nan, 0.0, 2.0],
+            angle_min=-np.pi / 2,
+            angle_increment=np.pi / 2,
+            **scan_limits,
+        )
+        check("2D 无效回波被丢弃", invalid, dict(none, rear_min=2.0, rear_clear=2.0))
+        over = summarize_scan(
+            [9.0, 1.0],
+            angle_min=0.0,
+            angle_increment=np.pi / 2,
+            **dict(scan_limits, max_range=8.0),
+        )
+        # 9 m 在 0°（前方）且超量程被丢，前向应为空；1 m 落在 90°，算左侧。
+        check("2D 超出量程被丢弃", over, dict(none, left_min=1.0))
+        # 与三维路径的一致性：随机扫描走两条路必须逐位相同（扇区规则只有一份）。
+        rng_scan = np.random.default_rng(7)
+        random_ranges = rng_scan.uniform(0.3, 6.0, 400)
+        random_ranges[rng_scan.uniform(size=400) < 0.2] = np.inf
+        via_scan = summarize_scan(
+            random_ranges, angle_min=-np.pi, angle_increment=2 * np.pi / 400, **scan_limits
+        )
+        via_points = summarize(
+            scan_to_points(random_ranges, -np.pi, 2 * np.pi / 400, 100.0), **scan_limits
+        )
+        check("2D 与三维路径一致", via_scan, via_points, tol=0.0)
     except AssertionError as exc:
         print(f"FAIL {exc}")
         return 1

@@ -1,10 +1,15 @@
-"""雷达摘要节点：VLP-16 点云 → ObstacleSummary（8 个避障派生量）。
+"""雷达摘要节点：雷达数据 → ObstacleSummary（8 个避障派生量）。
 
 文件目的：
     任务层的避障判据（`mission_core` 里 2.8 m 前向警戒、左右净空、倒车 rear_clear）
-    只认这 8 个数。仿真里它们由 MuJoCo 雷达扫描器直接算出来；真车只有点云，没有
-    "射线"，因此需要本节点把点云重新压成同样定义的 8 个数。几何实现放在
-    `lidar_geometry.summarize`（纯 numpy，可脱离 ROS 单测），本文件只负责 ROS 管线。
+    只认这 8 个数。仿真里它们由 MuJoCo 雷达扫描器直接算出来；真车拿到的是雷达数据、
+    没有"射线"，因此需要本节点重算成同样定义的 8 个数。几何实现放在
+    `lidar_geometry`（纯 numpy，可脱离 ROS 单测），本文件只负责 ROS 管线。
+
+两种输入（`input:=cloud|scan`，扇区规则同一份）：
+    ``cloud``  三维点云 `/{car}/lidar/points`（仿真桥；换成三维雷达时改一路话题即可）；
+    ``scan``   单线 2D 扫描 `/{car}/scan`（**真车思岚 A2 的用法**）。2D 只看得到雷达
+               所在水平面，低于该平面的障碍物不可见——这是传感器限制，不是算法问题。
 
 两种模式：
     ``mode:=publish``  发布 ``/{car}/obstacle_summary``，这是真车上的用法；
@@ -18,9 +23,10 @@
     ``mission_core``，与 `mm_mission` 用同一套注入规则（``colcon build --symlink-install``
     时由 realpath 反推，脱离源码树时用环境变量 ``MM_REPO_ROOT``）。
 
-真车要注意的两处：
-    ``mount_height`` 必须填实测的雷达安装高度（把传感器系 z 换算成离地高度），
-    ``self_radius`` 要盖住车体与机械臂的回波，否则自己会被当成前方障碍。
+真车要注意的三处：
+    ``mount_angle`` 补偿雷达安装朝向（0 = 传感器 x 轴与车体 x 轴一致）；
+    ``mount_height`` 填实测安装高度、``self_radius`` 盖住车体与机械臂回波（点云输入时
+    才用得上：2D 扫描本身就在一个平面上，没有"离地高度"可言）。
 """
 
 from __future__ import annotations
@@ -40,7 +46,7 @@ from rclpy.qos import (
     QoSProfile,
     ReliabilityPolicy,
 )
-from sensor_msgs.msg import PointCloud2
+from sensor_msgs.msg import LaserScan, PointCloud2
 from sensor_msgs_py import point_cloud2
 
 from mm_msgs.msg import ObstacleSummary
@@ -85,7 +91,7 @@ from mission_core import (  # noqa: E402
     LIDAR_REAR_HALF,
     LIDAR_SIDE_MAX,
 )
-from .lidar_geometry import summarize  # noqa: E402
+from .lidar_geometry import scan_to_points, summarize  # noqa: E402
 
 MAX_RANGE = 100.0
 # 「压在扇区边界上」的判定余量（弧度）。1e-5 rad 在 2.8 m 处约 0.03 mm。
@@ -121,7 +127,12 @@ class LidarSummary(Node):
         super().__init__("mm_lidar_summary")
         self.declare_parameter("car", "car1")
         self.declare_parameter("mode", "publish")
+        # input 决定吃什么：cloud = 三维点云（仿真桥 / 三维雷达），
+        # scan = 单线 2D 扫描（真车思岚 A2 的 /scan）。扇区规则同一份。
+        self.declare_parameter("input", "cloud")
         self.declare_parameter("cloud_topic", "")
+        self.declare_parameter("scan_topic", "")
+        self.declare_parameter("mount_angle", 0.0)
         self.declare_parameter("output_topic", "")
         self.declare_parameter("reference_topic", "")
         self.declare_parameter("self_radius", 0.0)
@@ -134,7 +145,13 @@ class LidarSummary(Node):
         self._mode = str(self.get_parameter("mode").value)
         if self._mode not in ("publish", "check"):
             raise RuntimeError(f"mode 只能是 publish 或 check，收到 {self._mode!r}")
+        self._input = str(self.get_parameter("input").value)
+        if self._input not in ("cloud", "scan"):
+            raise RuntimeError(f"input 只能是 cloud 或 scan，收到 {self._input!r}")
+        self._mount_angle = float(self.get_parameter("mount_angle").value)
         cloud_topic = str(self.get_parameter("cloud_topic").value) or f"/{car}/lidar/points"
+        scan_topic = str(self.get_parameter("scan_topic").value) or f"/{car}/scan"
+        input_topic = scan_topic if self._input == "scan" else cloud_topic
         output_topic = str(self.get_parameter("output_topic").value)
         if not output_topic:
             suffix = "" if self._mode == "publish" else "_check"
@@ -166,7 +183,10 @@ class LidarSummary(Node):
             durability=DurabilityPolicy.VOLATILE,
         )
         self._pub = self.create_publisher(ObstacleSummary, output_topic, qos)
-        self.create_subscription(PointCloud2, cloud_topic, self._on_cloud, qos)
+        if self._input == "scan":
+            self.create_subscription(LaserScan, input_topic, self._on_scan, qos)
+        else:
+            self.create_subscription(PointCloud2, input_topic, self._on_cloud, qos)
 
         # 对照用：按时间戳把"本节点算的"和"桥算的"配成对，避免差一帧造成假偏差。
         self._ours: dict[tuple[int, int], ObstacleSummary] = {}
@@ -186,7 +206,7 @@ class LidarSummary(Node):
             )
 
         self.get_logger().info(
-            f"点云 {cloud_topic} → {output_topic}；mode={self._mode}；"
+            f"{self._input} {input_topic} → {output_topic}；mode={self._mode}；"
             f"扇区来自 mission_core（警戒 {LIDAR_DETECT_RANGE} m/"
             f"前向 ±{math.degrees(LIDAR_FRONT_HALF):.0f}°）"
         )
@@ -196,12 +216,12 @@ class LidarSummary(Node):
     # ------------------------------------------------------------------
     @staticmethod
     def _stamp_key(msg) -> tuple[int, int]:
-        """用 (sec, nanosec) 作配对键：桥对同一帧的点云与摘要用的是同一个时间戳。"""
+        """用 (sec, nanosec) 作配对键：同一帧的输入与参考摘要用的是同一个时间戳。"""
         stamp = msg.header.stamp
         return (int(stamp.sec), int(stamp.nanosec))
 
     def _on_cloud(self, msg: PointCloud2) -> None:
-        """收到一帧点云：算 8 个数，按模式发布或留待对照。"""
+        """收到一帧三维点云：解出 (N,3) 交给统一的处理函数。"""
         # read_points 在 Humble 返回结构化数组，read_points_numpy 直接给 (N,3) 浮点数组。
         points = np.asarray(
             point_cloud2.read_points_numpy(
@@ -209,24 +229,39 @@ class LidarSummary(Node):
             ),
             dtype=np.float64,
         ).reshape(-1, 3)
+        self._handle(points, msg.header)
+
+    def _on_scan(self, msg: LaserScan) -> None:
+        """收到一帧单线 2D 扫描：摊到 z=0 平面后走同一套扇区规则。"""
+        points = scan_to_points(
+            msg.ranges,
+            float(msg.angle_min),
+            float(msg.angle_increment),
+            float(msg.range_max) if msg.range_max else None,
+            self._mount_angle,
+        )
+        self._handle(points, msg.header)
+
+    def _handle(self, points: np.ndarray, header) -> None:
+        """算 8 个数，按模式发布并（check 模式下）留待与参考逐帧对照。"""
         if points.shape[0] == 0:
             self._empty_clouds += 1
         summary = summarize(points, **self._limits)
 
         output = ObstacleSummary()
-        output.header = msg.header
+        output.header = header
         for key, value in summary.items():
             setattr(output, key, value)
         self._pub.publish(output)
         if self._mode == "publish":
             return
 
-        key = self._stamp_key(msg)
+        key = self._stamp_key(output)
         self._ours[key] = output
         self._counts[key] = int(points.shape[0])
         self._ambiguous[key] = _touches_boundary(points)
         self._pair(key)
-        self._prune(msg.header.stamp.sec)
+        self._prune(header.stamp.sec)
 
     def _on_reference(self, msg: ObstacleSummary) -> None:
         """收到桥的摘要（check 模式）：等着与同时间戳的点云配对。"""
