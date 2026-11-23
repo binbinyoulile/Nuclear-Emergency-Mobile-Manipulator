@@ -238,15 +238,13 @@ ROD_RADIUS = 0.003                      # 粗端半径
 BUCKET_EDGE_MARGIN = 0.003              # 端点离桶口内壁至少留这么多
 BUCKET_FLOOR_MARGIN = 0.02              # 端点允许低于桶底平面的量
 
-# 一号车停车距离：抓取位按机械臂可达性取 0.85 m；近距测量位取 1.85 m，腕部相机
-# 离目标约 1.26 m（视场中心线附近），详见 DualCarMission.run 中的注释。
-# 为什么不是早期的 1.41 m：机械臂座前移到平板中心（+0.188 m）并抬高 56 mm 后，相机跟着
-# 前移、抬高，杆在画面里的位置整体下移——1.55 m 时实测视场最近只到车前方 1.53 m
-# （再近就被夹爪自身挡住），Ø6 细杆正好卡在画面最底边，深度图上只剩 1 px 宽、连通域断开，
-# 报"离地带为空 / 没有落在搜索区里的连通域"。1.85 m 把杆拉回视场中部，与观测位（2.1 m）
-# 相比仍是更近的一档。
+# 一号车停车距离：抓取位按机械臂可达性取 0.85 m（车体中心到抓取点；臂座前移后基座到
+# 抓取点约 0.63 m，仍在 UR10 臂展 1.3 m 的舒适区内）。
+# 曾经还有一档"近距测量位"（1.41 m，臂座前移后改到 1.85 m）专门再拍一帧精定位，
+# 2026-11-23 实车布置（臂座前移 216 mm、整车 141.6 kg）后删掉：测量位的相机视场对
+# 车头朝向太敏感（残余偏航 19° 时杆只露出一半），而差速原地转在重车上效率只剩六成、
+# 摆正迭代常卡住；观测位 2.1 m 处实测视觉 1.0~1.7 mm，抓取 xy 容差是厘米级，够用。
 GRASP_STANDOFF_Y = 0.85
-MEASURE_STANDOFF_Y = 1.85
 
 # ---------------------------------------------------------------------------
 # 激光雷达：任务层自己解读的四个扇区定义 + 扫描周期。
@@ -1595,11 +1593,30 @@ class DualCarMission:
         print("\n[视觉识别] 观测位约 2.1 m：只做粗定位（棒在图上约 60 像素长）。")
         # 刻意同步调用：若在后台线程里处理、主循环按 future.done() 边步进边等，
         # 推进帧数会取决于线程墙钟，同一 seed 两次可能走出不同轨迹（回归不可复现）。
-        try:
-            coarse = self.io.perception.estimate_target()
-        except (RuntimeError, TimeoutError) as exc:
-            # 观测位看不清时退回"目标区中心"这一任务级先验：目标点一定在该区内，
-            # 先验只用来决定把车开到哪里补拍，最终抓取点仍由近距测量给出。
+        coarse = None
+        for attempt in range(2):
+            try:
+                coarse = self.io.perception.estimate_target()
+                break
+            except (RuntimeError, TimeoutError) as exc:
+                if attempt == 1:
+                    break
+                # 观测位（2.1 m）偶发只分割到 160 mm 里的 16 cm（端点偏 37 mm）：靠近
+                # 0.5 m 重拍比直接退回"目标区中心"可靠——后者会偏一百多毫米，抓取必空
+                # （实测 seed 8 就是这么挂的）。这里不需要精确停车，纯追踪直接上。
+                print(f"[视觉识别] 观测位粗定位失败（{exc}），前进 0.5 m 重拍")
+                here, _ = self.car1.pose()
+                creep = PathFollower(
+                    self.car1,
+                    [(float(here[0]), float(here[1] + 0.5))],
+                    self.io.clock,
+                    waypoint_timeout=SHORT_MANEUVER_TIMEOUT,
+                    final_tolerance=0.10,
+                    max_speed=REVERSE_SPEED,
+                )
+                run_followers_until_primary_done(self.io, creep, car2_follower)
+        if coarse is None:
+            # 两次都没看清：退回"目标区中心"这一任务级先验，目标点一定在该区内。
             coarse = np.array(
                 [
                     0.5 * (TARGET_ZONE_X_MIN + TARGET_ZONE_X_MAX),
@@ -1608,7 +1625,7 @@ class DualCarMission:
                 ],
                 dtype=float,
             )
-            print(f"[视觉识别] 观测位粗定位失败（{exc}），改用目标区中心先验")
+            print("[视觉识别] 两次拍摄都失败，退回目标区中心先验")
         print(
             f"[视觉识别] 粗定位 ({coarse[0]:.3f}, {coarse[1]:.3f})"
         )
@@ -1643,83 +1660,13 @@ class DualCarMission:
             dock_offset=float(dock_offset),
         )
 
-        # 近距测量位：停车距离 1.41 m，腕部相机离目标约 1.0 m、俯角约 45°。
-        # 不能直接开去 0.85 m 的抓取位再拍——D435i 相对工具固定下俯 28.5°，视场
-        # 下沿只到 49.8°，而 0.85 m 停车位下相机到目标的俯角是 66°，实测投影
-        # v=715（图像高 480），目标落在画面外。1.41 m 处约 88 像素长、2.6 像素宽。
-        measure_xy = np.array(
-            [coarse[0], coarse[1] - MEASURE_STANDOFF_Y], dtype=float
-        )
-        car1_measure = PathFollower(
-            self.car1,
-            [(float(measure_xy[0]), float(measure_xy[1]))],
-            self.io.clock,
-            waypoint_timeout=SHORT_MANEUVER_TIMEOUT,
-            final_tolerance=0.10,
-            max_speed=APPROACH_SPEED,
-        )
-        run_followers_until_primary_done(self.io, car1_measure, car2_follower)
-
-        # 测量位拍照前先把车头摆正：臂座前移到平板中心后，腕部相机跟着前移，
-        # 相机视野对车头朝向更敏感——长距离绕行 + 整车增重后残余偏航能到 60° 以上，
-        # 腕部相机变成"斜着看"，实测视场里只剩空地，杆完全不在画面里（深度图上什么都没有）。
-        # 在观测位（y≈18.5）摆正的代价是滑移几厘米，但测量位的杆世界坐标由视觉给出、
-        # 不依赖车位置精度，所以这里值得转。整车 141 kg 后差速原地转的效率比 108 kg 时更低
-        # （同样轮速下横摆只有原来的六成），单次转常常转不到位，所以最多迭代三次。
-        for attempt in range(3):
-            _, car1_yaw_here = self.car1.pose()
-            measure_align_error = abs(wrap_angle(CAR_START_YAW - car1_yaw_here))
-            if measure_align_error <= np.deg2rad(5.0):
-                break
-            print(
-                f"  [CAR1] 测量位前残余偏航 {np.rad2deg(measure_align_error):.1f}°"
-                f"（第 {attempt + 1} 次摆正）"
-            )
-            aligner = SkidTurnFollower(
-                self.car1,
-                CAR_START_YAW,
-                self.io.clock,
-                timeout=8.0,
-                ramp_time=SKID_TURN_SPINDOWN_TIME,
-            )
-            run_turn_with_secondary(self.io, aligner, car2_follower)
-
-        # 无论转没转，都等车停稳再拍帧（差速原地转收尾时车体仍有残余速度）。
-        run_wait_concurrent(self.io, 0.2, car2_follower)
-
-        print("\n[视觉识别] 近距复测：由粗定位把车开到测量位，再采一帧精定位。")
-        target = None
-        for attempt in range(2):
-            try:
-                target = self.io.perception.estimate_target()
-                break
-            except (RuntimeError, TimeoutError) as exc:
-                if attempt == 1:
-                    # 测量位两帧都没拍到杆：退回观测位的粗定位结果。实车布置下
-                    # 141.6 kg 的车差速原地转不可靠，车头可能仍偏十几度，腕部相机
-                    # 就斜着看、杆落到画面外。粗定位在 2.1 m 处的实测误差 1.1~1.7 mm，
-                    # 抓取的 xy 容差是厘米级，够用——比让整条任务失败合理。
-                    print(
-                        f"[视觉识别] 测量位重试仍失败（{exc}），退回观测位粗定位 "
-                        f"({coarse[0]:.3f}, {coarse[1]:.3f})"
-                    )
-                    target = coarse.copy()
-                    break
-                # 粗定位偏 0.3 m 以上时，测量位会停得离目标过近，杆落到相机下视场
-                # 之外（画面下缘只剩细端、又落在搜索区外）。后退 0.35 m 再采一帧。
-                print(f"[视觉识别] 测量位识别失败（{exc}），后退 0.35 m 重试")
-                retry_xy = measure_xy - np.array([0.0, 0.35])
-                retry = PathFollower(
-                    self.car1,
-                    [(float(retry_xy[0]), float(retry_xy[1]))],
-                    self.io.clock,
-                    waypoint_timeout=SHORT_MANEUVER_TIMEOUT,
-                    final_tolerance=0.10,
-                    max_speed=REVERSE_SPEED,
-                )
-                run_followers_until_primary_done(
-                    self.io, retry, car2_follower
-                )
+        # 直接用观测位的粗定位，不再开到近距测量位另拍一帧（2026-11-23 实车布置后删掉）。
+        # 原因：臂座前移 216 mm、整车 141.6 kg 之后，测量位有两个绕不过去的问题——
+        # ①腕部相机视场对车头朝向变敏感，残余偏航 19° 时杆只露出一半（实测分割 4.1 cm
+        # 被判误检）；②差速原地转效率只剩六成，摆正迭代常卡在 19° 不动。
+        # 而观测位（2.1 m）21 个种子实测视觉误差 1.0~1.7 mm，抓取 xy 容差是厘米级，够用；
+        # 少一次停车 + 摆正 + 拍照，单次仿真还能省几秒。
+        target = coarse.copy()
         vision_error = float(np.linalg.norm(target - self.target_truth))
         self.metrics.update(
             vision_error_mm=vision_error * 1000.0,

@@ -136,25 +136,26 @@ def convert(src: str, subtree: str) -> tuple[str, list[str]]:
     )
     if n != 1:
         raise SystemExit("母本里没有 <asset>，无法注入 RG2 网格")
-    # 8) 实车安装布置（2026-11-23 老师提供的尺寸，单位 m；x 前、y 左、z 上，
-    #    原点在车体几何中心地面）：
-    #      · 两条导轨 700×40×36，中心间距 260、左右对称、前后距防撞管相等（各 134 mm）；
-    #        其中后段 370 mm 被控制室盖住，模型里只画露出的 330 mm（视觉件；质量仍按全长计）；
-    #      · 臂安装平板 180(前后)×300(左右)×20，放在导轨上；平板中心距车前端（含防撞管）296 mm；
-    #      · 尾部控制室 420(前后)×460(左右)×272、25 kg。
-    #    平板与导轨质量按铝 2700 kg/m³ 估算（导轨 2.72 kg ×2、平板 2.92 kg），控制室用 25 kg；
-    #    旧的"臂座圆柱"视觉件由平板取代。
+    # 8) 实车安装布置（2026-11-23 老师给的两批尺寸，单位 m；x 前、y 左、z 上，
+    #    原点在车体几何中心地面）。**含前后防撞梁全长 912**，前后一条链闭合：
+    #      防撞梁前端 0.456 → 导轨前端 0.350（前 106）→ 平板前端 0.306（再 44）
+    #      → 平板长 180，中心 **0.216** → 平板后端 0.126 → 控制室前端 0.008（再 118）
+    #      → 控制室长 420 → 后端 −0.412 → 车尾防撞梁 −0.456（再 44）。
+    #    导轨长 700 → x ∈ [−0.350, +0.350]，中心间距 260、宽 40、高 36；后段被控制室盖住，
+    #    模型里只画露出的 [0.008, 0.350]（视觉件，质量仍按全长计）。
+    #    平板 180(前后)×300(左右)×20，顶面 z=0.45956；控制室 420×460×272、25 kg。
+    #    平板与导轨质量按铝 2700 kg/m³ 估算（导轨 2.72 kg ×2、平板 2.92 kg）；控制室用 25 kg。
     pedestal = (
-        '      <geom name="car1_rail_l" type="box" pos="0.165 0.13 0.42156"\n'
-        '            size="0.185 0.02 0.018" mass="2.72" contype="0" conaffinity="0"\n'
+        '      <geom name="car1_rail_l" type="box" pos="0.179 0.13 0.42156"\n'
+        '            size="0.171 0.02 0.018" mass="2.72" contype="0" conaffinity="0"\n'
         '            group="2" rgba="0.55 0.57 0.60 1" />\n'
-        '      <geom name="car1_rail_r" type="box" pos="0.165 -0.13 0.42156"\n'
-        '            size="0.185 0.02 0.018" mass="2.72" contype="0" conaffinity="0"\n'
+        '      <geom name="car1_rail_r" type="box" pos="0.179 -0.13 0.42156"\n'
+        '            size="0.171 0.02 0.018" mass="2.72" contype="0" conaffinity="0"\n'
         '            group="2" rgba="0.55 0.57 0.60 1" />\n'
-        '      <geom name="car1_arm_plate" type="box" pos="0.188 0 0.44956"\n'
+        '      <geom name="car1_arm_plate" type="box" pos="0.216 0 0.44956"\n'
         '            size="0.09 0.15 0.01" mass="2.92" contype="0" conaffinity="0"\n'
         '            group="2" rgba="0.72 0.74 0.78 1" />\n'
-        '      <geom name="car1_control_box" type="box" pos="-0.23 0 0.53956"\n'
+        '      <geom name="car1_control_box" type="box" pos="-0.202 0 0.53956"\n'
         '            size="0.21 0.23 0.136" mass="25" contype="0" conaffinity="0"\n'
         '            group="2" rgba="0.82 0.82 0.80 1" />\n'
     )
@@ -165,14 +166,24 @@ def convert(src: str, subtree: str) -> tuple[str, list[str]]:
         "安装件：两导轨 + 平板 + 控制室（25 kg）" if n else "安装件：母本无 arm_pedestal，跳过"
     )
 
-    # 臂座移到平板上表面中心：平板顶面 z = 0.40356(车顶) + 0.036(导轨) + 0.020(平板) = 0.45956
+    # 臂座移到平板上表面中心 x=0.216（平板顶面 z = 0.40356 + 0.036 + 0.020 = 0.45956）
     old_base = '<body name="base" pos="0 0 0.40356" quat="0 0 0 -1" childclass="ur10e">'
     if old_base in src:
         src = src.replace(
             old_base,
-            '<body name="base" pos="0.188 0 0.45956" quat="0 0 0 -1" childclass="ur10e">',
+            '<body name="base" pos="0.216 0 0.45956" quat="0 0 0 -1" childclass="ur10e">',
         )
-        log.append("臂座移到 (0.188, 0, 0.45956)（平板中心）")
+        log.append("臂座移到 (0.216, 0, 0.45956)（平板中心）")
+
+    # 9) 防撞梁长度：实车"含前后防撞梁全长 912"，而母本的圆柱中心在 ±0.452、半径 0.032
+    #    → 外沿 ±0.484 = 968 mm，比实车长 56 mm。收进 ±0.456 即中心 ±0.424。
+    for old, new in (
+        ('pos="0.452 0 0.215"', 'pos="0.424 0 0.215"'),
+        ('pos="-0.452 0 0.215"', 'pos="-0.424 0 0.215"'),
+    ):
+        if old in src:
+            src = src.replace(old, new)
+    log.append("防撞梁收到 ±0.456（含梁全长 912）")
     return src, log
 
 
