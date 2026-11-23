@@ -25,10 +25,7 @@
         <joint damping="2" />
         <general forcerange="-56 56" />
       </default>
-      <default class="rg2_visual">
-      <geom type="mesh" contype="0" conaffinity="0" group="2" />
-    </default>
-    <default class="visual">
+      <default class="visual">
         <geom type="mesh" contype="0" conaffinity="0" group="2" />
       </default>
       <default class="collision">
@@ -73,6 +70,7 @@
   </default>
 
   <asset>
+    <mesh name="rg2_body_mesh" file="rg2_body.stl" />
     <material class="ur10e" name="black" rgba="0.033 0.033 0.033 1" />
     <material class="ur10e" name="jointgray" rgba="0.278 0.278 0.278 1" />
     <material class="ur10e" name="linkgray" rgba="0.82 0.82 0.82 1" />
@@ -261,20 +259,37 @@
                           quat="0.24469942 0.96735948 0.01622508 -0.06383244"
                           fovy="42.6"/>
                   
-<!-- OnRobot RG2 澶圭埅瀛愭爲锛圡uJoCo 鐗囨锛屼緵 scripts/build_rg2_model.py 鎷艰锛夈€?
-灏哄閿氱偣锛堝叏閮ㄦ湁鍑哄锛屼笉鏄及鐨勶級锛?  路 娉曞叞 鈫?澶圭埅浣?50 mm銆佸す鐖綋 鈫?鎶撳彇鐐?140 mm锛氭潵鑷?    github.com/inria-paris-robotics-lab/onrobot_ros锛圡IT锛夌殑 `rg2_v1.yaml`
-    origin.single_bracket / origin.grasp_frame锛屽悎璁℃硶鍏板埌 TCP 190 mm銆?  路 澶圭埅浣撹川閲?0.65 kg銆佹敮鏋?0.09 kg锛氬悓涓婏紝涓斾笌 OnRobot 瀹樻柟
-    銆奟G2 Center of mass銆嬫枃浠讹紙Mass = 0.65 Kg锛夐€愪綅涓€鑷淬€?  路 鎸囧灚灏哄 11.5 脳 20.0 脳 29.5 mm锛氳鍖?`flex_finger.stl` 鐨勫疄娴嬪寘鍥寸洅銆?  路 琛岀▼ 0~110 mm銆佸す鎸佸姏 3~40 N锛歄nRobot RG2 datasheet v1.6銆?  路 澶圭埅浣撳寤?72.5 脳 36.0 脳 118.2 mm锛歚body.stl` 瀹炴祴鍖呭洿鐩掞紙鍘氬害 36 mm
-    涓?datasheet 鐨?213脳149脳36 瀵逛笂锛夈€?
-绠€鍖栵紙宸插湪 docs 閲屽啓鏄庯級锛歊G2 鍐呴儴鏄洓杩炴潌锛屼絾閭ｅ绀惧尯 URDF 鐨勯浂浣嶄笌鍏宠妭琛岀▼
-瀵瑰簲涓嶄笂锛坬=0 鏃舵寚闈㈤棿璺?215 mm銆乹=1.3 鏃朵粛鏈?98 mm锛屾案杩滃悎涓嶆嫝锛夛紝鐩存帴鐓ф惉浼?寰楀埌涓€涓棴涓嶄笂鐨勫す鐖€傜湡瀹?RG2 鐨勪袱涓寚闈㈡槸**骞宠绉诲姩**鐨勶紝鎵€浠ヨ繖閲屾寜涓ゆ寚鐩寸嚎
-骞崇Щ寤烘ā锛氬嚑浣曢敋鐐瑰叏閮ㄦ部鐢ㄤ笂闈㈢殑鏁板瓧锛屾満鏋勭畝鍖栦笉褰卞搷鎶撳彇鍒ゅ畾銆?-->
+<!-- OnRobot RG2 夹爪子树（MuJoCo 片段，供 scripts/build_rg2_model.py 拼装）。
+
+尺寸锚点（全部有出处，不是估的）：
+  · 法兰 → 夹爪体 50 mm、夹爪体 → 抓取点 140 mm：来自社区 URDF
+    github.com/ikalevatykh/onrobot_ros（MIT）的 `config/rg2_v1.yaml`：
+    origin.single_bracket z=0.05、origin.grasp_frame z=0.14（相对 body），
+    合计法兰到 TCP 190 mm。
+  · 夹爪体质量 0.65 kg、支架 0.09 kg：同上，且与 OnRobot 官方《RG2 Center of mass》
+    文件（Mass = 0.65 Kg）逐位一致。
+  · 指垫尺寸 11.5 × 20.0 × 29.5 mm：该包 `flex_finger.stl` 的实测包围盒。
+  · 行程 0~110 mm、夹持力 3~40 N：OnRobot RG2 datasheet v1.6。
+  · 本体外廓 72.5 × 36.0 × 118.2 mm：`body.stl` 实测包围盒（datasheet 上的
+    213×149×36 是含包装的整机外廓，别混用）。
+
+视觉：本体用社区包里的高精度网格（`visual/body.stl`，17862 个三角面，已改名
+`rg2_body.stl`，由 scripts/fetch_models.py 下载）。它的顶点坐标就以 body 坐标系为原点，
+包围盒 z = −41.0 ~ +77.2 mm，与下面碰撞盒（pos z=0.018、半高 59.1 mm）逐位吻合，
+所以直接挂 pos="0 0 0"，不需要额外偏移。手指仍用基本几何体——社区 URDF 是四连杆，
+与这里的平移简化不是一套运动学，硬套它的手指网格只会错位。
+
+简化（docs 里也写明）：RG2 内部是四连杆，但该社区 URDF 的零位与关节行程对不上
+（q=0 时指面间距 215 mm、q=1.3 时仍有 98 mm，永远合不拢），直接照搬会得到一个闭不上
+的夹爪。真实 RG2 的两个指面是**平行移动**的，所以这里按两指直线平移建模：几何锚点
+全部沿用上面的数字，机构简化不影响抓取判定。
+-->
 <body name="onrobot_rg2_mount" pos="0 0.1 0" quat="0.707107 -0.707107 0 0">
-  <!-- 宸ュ叿绯婚噷 +z 鏈濆伐浠躲€?y 鏄?涓ゆ寚鍒嗗紑鐨勬柟鍚?鈥斺€旇繖鏄?2F-85 妯″瀷鐨勭害瀹氾紝
-       `choose_grasp_spin` 鎸夎繖涓害瀹氶€夎嚜鏃嬭銆俁G2 鐨勬寚鍦ㄨ嚜韬?+x 鏂瑰悜寮€鍚堬紝
-       鎵€浠ユ暣浣撶粫 z 杞?90掳锛屾妸寮€鍚堟柟鍚戝鍒?+y锛屼换鍔″眰涓€琛岄兘涓嶇敤鏀广€?-->
+  <!-- 工具系里 +z 朝工件、y 是两指分开的方向——这是 2F-85 模型的约定，
+       `choose_grasp_spin` 按这个约定选自旋角。RG2 的指在自身 +x 方向开合，
+       所以整体绕 z 转 90°，把开合方向对到 +y，任务层一行都不用改。 -->
   <body name="rg2_face" quat="0.707107 0 0 0.707107">
-  <!-- 娉曞叞涓庢湰浣撲箣闂寸殑 50 mm 鍨潡 -->
+  <!-- 法兰与本体之间的 50 mm 垫块 -->
   <body name="rg2_bracket" pos="0 0 0">
     <inertial pos="0 0 0.025" mass="0.09" diaginertia="5e-05 5e-05 8e-05" />
     <geom name="rg2_bracket_geom" type="cylinder" size="0.045 0.025" pos="0 0 0.025"
@@ -282,47 +297,45 @@
 
     <body name="rg2_body" pos="0 0 0.05">
       <inertial pos="0 0 0.018" mass="0.65" diaginertia="0.001 0.001 0.001" />
-      <!-- 本体外观用外廓方盒（真实 RG2 本体就是一个 72.5×36×118.2 mm 的铝块）。
-           早先用社区扫描网格 `body.stl`，它的原点未知、渲染出来的轮廓比 118 mm 矮一截，
-           和两根手指之间留出十几毫米的视觉空隙，看起来像"手指没连到机械臂"。外廓方盒
-           bottom 与指根对齐，画面里是连着的；物理仍由下面的 collision 盒负责。 -->
-      <geom name="rg2_body_visual" type="box" pos="0 0 0.018"
-            size="0.0363 0.018 0.0591" contype="0" conaffinity="0" group="2"
-            rgba="0.68 0.68 0.71 1" />
+      <!-- 本体外观：社区高精度网格，顶点坐标即 body 系原点，见文件头 -->
+      <geom name="rg2_body_visual" type="mesh" mesh="rg2_body_mesh"
+            contype="0" conaffinity="0" group="2" rgba="0.66 0.67 0.70 1" />
+      <!-- 物理碰撞体仍是外廓方盒（网格碰撞会把几十个凸包塞进接触求解，没必要） -->
       <geom name="rg2_body_collision" type="box" pos="-0.001 0 0.018"
             size="0.037 0.019 0.060" group="3" rgba="0.5 0.5 0.5 0.15" />
 
-      <!-- 鎶撳彇鐐癸細浣撳潗鏍囩郴 z+140 mm锛圲RDF grasp_frame锛夛紝钀藉湪涓ゆ寚鍨殑绔栧悜涓偣銆?           site 鐨勫Э鎬佸繀椤讳笌琚浛鎹㈡帀鐨?2F-85 pinch 瀹屽叏涓€鑷达紙閭ｅ妯″瀷鏄?Rx(-90掳)路Rz(-90掳)
-           鐨勫悎鎴愶紝杩欓噷鏄?Rx(-90掳)路Rz(+90掳)锛屽啀琛ヤ竴涓?Rz(180掳) 灏卞榻愪簡锛夈€傚樊 180掳 鏃?           IK 浼氭妸鑵曢儴鏁翠綋杞繃鍘伙紝鑵曢儴鐩告満璺熺潃杞蛋锛岃娴嬩綅涓€涓瓧閮芥媿涓嶅埌銆?-->
+      <!-- 抓取点：body 坐标系 z+140 mm（URDF grasp_frame），落在两指垫的竖向中点。
+           site 的姿态必须与被替换掉的 2F-85 pinch 完全一致（那套模型是 Rx(-90°)·Rz(-90°)
+           的合成，这里是 Rx(-90°)·Rz(+90°)，差 180°，由 GRASP_SPIN_CANDIDATES_DEG
+           里的 0°/180° 两个候选吸收）。差 180° 时 IK 会把腕部整体转过去，腕部相机
+           跟着转走，观测位一个字都拍不到。 -->
       <site name="pinch" pos="0 0 0.14" quat="0 0 0 1" type="sphere" group="5"
             rgba="0.9 0.9 0.9 1" size="0.005" />
 
-      <!-- ===== 鎸?+x锛歲pos = 鍗婂紑搴?g锛屾寚闈㈠湪 x=+g ===== -->
+      <!-- ===== 指 +x：qpos = 半开度 g，指面在 x=+g ===== -->
       <body name="rg2_jaw_pos" pos="0 0 0.09">
         <inertial pos="0.006 0 0.05" mass="0.02" diaginertia="2e-06 2e-06 4e-06" />
         <joint name="rg2_jaw_pos_joint" type="slide" axis="1 0 0"
                range="0.0005 0.055" damping="8" armature="0.01"
                solreflimit="0.005 1" solimplimit="0.95 0.99 0.001" />
-        <!-- 鎸囧灚锛氬唴渚ч潰鍦ㄥ眬閮?x=0锛屽悜涓嬩几鍒?pinch 涓嬫柟 14.75 mm -->
+        <!-- 指垫：内侧面在局部 x=0，向下伸到 pinch 下方 14.75 mm -->
         <geom name="rg2_jaw_pos_pad" type="box" pos="0.00575 0 0.05"
               size="0.00575 0.010 0.01475" group="3"
               friction="1.3 0.02 0.002" solimp="0.999 0.9999 0.00001"
               solref="0.001 1"
               priority="1" rgba="0.9 0.75 0.3 0.45" />
-        <!-- 鎸囨潌锛氭妸鎸囧灚鎺ュ埌鏈綋銆?*鍙兘浣嶄簬鏈綋搴曢潰锛堢粷瀵?z=78 mm锛変笌鎸囧灚涓婃部
-             锛堢粷瀵?z=125.25 mm锛変箣闂?*锛氭寚鏉嗗師鍏堝啓鍦?z=85 mm銆佹濂借法鍒版寚鍨渚э紝
-             鎸囧皷鏂瑰悜澶氫几鍑?61 mm锛屽悜涓嬫姄鍙栨椂鏄寚鏉嗗厛鐫€鍦帮紝pinch 鍋滃湪绂诲湴 59.5 mm
-             锛堟瘮鐩爣楂?43 mm锛夛紝澶圭埅鍦ㄦ潌涓婃柟绌哄悎銆?-->
+        <!-- 指杆：把指垫接到本体。**只能位于本体底面（绝对 z=78 mm）与指垫上沿
+              （绝对 z=125.25 mm）之间**：指杆原先写在 z=85 mm、正好跨到指垫外侧，
+             指尖方向多伸出 61 mm，向下抓取时是指杆先着地，pinch 停在离地 59.5 mm
+              （比目标高 43 mm），夹爪在杆上方空合。 -->
         <geom name="rg2_jaw_pos_shank" type="box" pos="0.00575 0 0.0116"
               size="0.00575 0.009 0.0236" group="3" rgba="0.8 0.8 0.8 0.15" />
         <geom name="rg2_jaw_pos_visual" type="box" pos="0.00575 0 0.0174"
               size="0.0059 0.010 0.0474" contype="0" conaffinity="0" group="2"
               rgba="0.72 0.72 0.75 1" />
-        <!-- 真实指垫网格（flex_finger.stl）：原点未知、渲染对不齐，已退回下面的薄板视觉。 -->
-
       </body>
 
-      <!-- ===== 鎸?-x锛氳酱鍙?-x锛屾墍浠?qpos 鍚屾牱鏄崐寮€搴?g ===== -->
+      <!-- ===== 指 −x：轴取 −x，所以 qpos 同样是半开度 g ===== -->
       <body name="rg2_jaw_neg" pos="0 0 0.09">
         <inertial pos="-0.006 0 0.05" mass="0.02" diaginertia="2e-06 2e-06 4e-06" />
         <joint name="rg2_jaw_neg_joint" type="slide" axis="-1 0 0"

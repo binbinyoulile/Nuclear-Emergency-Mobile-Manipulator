@@ -126,15 +126,17 @@ def convert(src: str, subtree: str) -> tuple[str, list[str]]:
         src = src[: m.start(2)] + attrs + src[m.end(2):]
         log.append(f"{body}: {m_e} -> {m_10} kg（惯量 ×{ratio:.3f}）")
 
-    # 7) 资源：RG2 视觉默认类（本体与手指改成基本几何体后，已不需要任何 STL 网格）
-    src = src.replace(
-        '    <default class="visual">',
-        '    <default class="rg2_visual">\n'
-        '      <geom type="mesh" contype="0" conaffinity="0" group="2" />\n'
-        "    </default>\n"
-        '    <default class="visual">',
-        1,
+    # 7) 资源：RG2 本体视觉网格。与 UR10e 的网格同目录、同 meshdir，由 fetch_models.py 下载。
+    #    （子树的 <body> 片段里不能写 <asset>，所以在这里注入。）
+    src, n = re.subn(
+        r"(<asset>\s*\n)",
+        r'\1    <mesh name="rg2_body_mesh" file="rg2_body.stl" />\n',
+        src,
+        count=1,
     )
+    if n != 1:
+        raise SystemExit("母本里没有 <asset>，无法注入 RG2 网格")
+    log.append("注入 RG2 本体网格 rg2_body.stl")
     return src, log
 
 
@@ -143,7 +145,8 @@ def main() -> None:
 
     for src_name, dst_name in JOBS:
         src, log = convert((MODEL_DIR / src_name).read_text(encoding="utf-8"), subtree)
-        (MODEL_DIR / dst_name).write_text(src, encoding="utf-8")
+        # newline="\n"：项目约定 LF，Windows 上 write_text 默认会写 CRLF
+        (MODEL_DIR / dst_name).write_text(src, encoding="utf-8", newline="\n")
         print(f"已生成 {dst_name}")
         for line in log:
             print("  " + line)

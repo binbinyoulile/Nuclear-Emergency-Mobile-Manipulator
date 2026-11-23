@@ -127,7 +127,8 @@ python scripts\fetch_models.py
 脚本从 [MuJoCo Menagerie](https://github.com/google-deepmind/mujoco_menagerie) 获取：
 
 - [Universal Robots UR10e](https://github.com/google-deepmind/mujoco_menagerie/tree/main/universal_robots_ur10e)（UR10 与 UR10e 几何完全一致，共用这套网格）
-- [Robotiq 2F-85](https://github.com/google-deepmind/mujoco_menagerie/tree/main/robotiq_2f85)（旧模型备查；当前默认的 OnRobot RG2 **不需要任何网格**——本体与手指都用基本几何体建）
+- [Robotiq 2F-85](https://github.com/google-deepmind/mujoco_menagerie/tree/main/robotiq_2f85)（旧模型备查）
+- OnRobot RG2 本体视觉网格（`rg2_body.stl`，来自 [ikalevatykh/onrobot_ros](https://github.com/ikalevatykh/onrobot_ros) 的 `visual/body.stl`，MIT）。手指仍用基本几何体——那套 URDF 是四连杆，与本模型的平移简化不是一套运动学
 
 自建的两份整车装配是 `models/universal_robots_ur10e/dual_mobile_ur10_rg2.xml`（默认，UR10 + RG2）
 与 `dual_mobile_ur10e.xml`（旧配置，UR10e + 2F-85），把机械臂、移动底盘和 D435i 的安装关系组合在同一 MuJoCo 层级中。
@@ -433,4 +434,4 @@ D:\Python313\python.exe .\scripts\run_matrix.py --seeds 0-20
 
 本项目自建代码与场景采用 [MIT License](LICENSE)，Copyright (c) 2026 Haobin Zhu。
 
-第三方资产沿用其上游许可证：UR10 / UR10e 模型文件遵循 MuJoCo Menagerie 附带的 BSD-3-Clause License；Robotiq 2F-85 资产按其上游许可证使用。当前默认的 OnRobot RG2 模型参考社区 URDF（[`inria-paris-robotics-lab/onrobot_ros`](https://github.com/inria-paris-robotics-lab/onrobot_ros)，MIT）的关节行程与质量参数，几何全部用 MuJoCo 基本体重建，不含第三方网格。
+第三方资产沿用其上游许可证：UR10 / UR10e 模型文件遵循 MuJoCo Menagerie 附带的 BSD-3-Clause License；Robotiq 2F-85 资产按其上游许可证使用。当前默认的 OnRobot RG2 模型：**本体视觉网格**取自 [`ikalevatykh/onrobot_ros`](https://github.com/ikalevatykh/onrobot_ros)（MIT）的 `meshes/rg2_v1/visual/body.stl`，连杆质量、法兰到抓取点的 50/140 mm 与指垫尺寸同样来自该包的 `rg2_v1.yaml`（并与 OnRobot 官方质心文件 0.65 kg 对过）；手指与碰撞体用 MuJoCo 基本几何体重建，因为该 URDF 的手指是四连杆、行程对不上，而真实 RG2 的两个指面是平行移动的。
