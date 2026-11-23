@@ -28,6 +28,7 @@ import os
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -248,6 +249,8 @@ def main() -> int:
     parser.add_argument("--timeout", type=float, default=1800.0, help="单种子墙钟超时秒")
     parser.add_argument("--out", default="", help="CSV 路径，默认 reports/regression.csv")
     parser.add_argument("--logs", default="", help="日志目录，默认 reports/logs")
+    parser.add_argument("--jobs", type=int, default=1,
+                        help="同时跑几个种子；1=串行。只影响墙钟，不影响结果")
     args = parser.parse_args()
 
     seeds = parse_seeds(args.seeds)
@@ -264,22 +267,46 @@ def main() -> int:
     print(f"csv:   {out_path}")
 
     rows: list[dict] = []
+    done = 0
+
+    def emit(row: dict) -> None:
+        """登记一行、立刻落盘并打印，长跑中断也能看到已完成的部分。"""
+        nonlocal done
+        rows.append(row)
+        done += 1
+        writer.writerow(row)
+        handle.flush()
+        print(
+            f"[{done}/{len(seeds)}] seed {row['seed']:>3} "
+            f"ok={str(row['ok']):<5} stage={row['stage']:<14} "
+            f"sim={row['sim_time_s']} wall={row['wall_s']}s",
+            flush=True,
+        )
+        if not row["ok"] and row["error"]:
+            print(f"           {row['error']}", flush=True)
+
     with out_path.open("w", newline="", encoding="utf-8-sig") as handle:
         writer = csv.DictWriter(handle, fieldnames=COLUMNS)
         writer.writeheader()
-        for index, seed in enumerate(seeds, start=1):
-            row = run_one(seed, args.timeout, log_dir)
-            rows.append(row)
-            writer.writerow(row)
+        handle.flush()
+        if args.jobs <= 1:
+            for seed in seeds:
+                emit(run_one(seed, args.timeout, log_dir))
+        else:
+            # 每个种子是独立进程、独立物理，并行只影响墙钟不影响结果（另用同种子串行对照验证过）。
+            with ThreadPoolExecutor(max_workers=args.jobs) as pool:
+                futures = [
+                    pool.submit(run_one, seed, args.timeout, log_dir) for seed in seeds
+                ]
+                for future in as_completed(futures):
+                    emit(future.result())
+            # 并行完成顺序是乱的，最后按种子号重写一遍，CSV 才能与串行结果直接 diff。
+            handle.seek(0)
+            handle.truncate()
+            writer.writeheader()
+            for row in sorted(rows, key=lambda item: item["seed"]):
+                writer.writerow(row)
             handle.flush()
-            print(
-                f"[{index}/{len(seeds)}] seed {seed:>3} "
-                f"ok={str(row['ok']):<5} stage={row['stage']:<14} "
-                f"sim={row['sim_time_s']} wall={row['wall_s']}s",
-                flush=True,
-            )
-            if not row["ok"] and row["error"]:
-                print(f"           {row['error']}", flush=True)
 
     summarize(rows)
     print(f"\ncsv written: {out_path}")
