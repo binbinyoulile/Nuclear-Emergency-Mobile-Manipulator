@@ -14,7 +14,7 @@
 
 **当前边界（`master`；冻结基线是 tag `v1.0.0`，之后被操作对象换成不锈钢监测棒、屏蔽桶换成 Ø400 圆筒、机械臂换成实车配置 UR10 + OnRobot RG2）**：
 
-- 已实现：双车协同全流程仿真（雷达避障 → 视觉识别 → 侧面抓取 → 动态停靠 → 协同投放 → 倒车脱离 → 精准返航），75 kg 真实参数重载底盘，21 个随机种子的可回归验收；阶段 1 的三节点 ROS 2 骨架（`ros2_ws`）已在 Ubuntu 22.04 + 原生 Humble 上 `colcon build` 通过；阶段 2 把任务层拆到零 MuJoCo 的 `mission_core.py`，单进程与 ROS 2 共用同一份实现，端口扩到 `Lidar / object_pose / tool_position`，轨道 B（ROS 侧 21 个种子）同样 21/21，并由 `scripts/run_ros_matrix.py` 脚本化（并行 4 路、墙钟 28.9 min，换 UR10 + RG2 后重跑）；真车避障链缺的"点云 → 雷达摘要"节点已在 `mm_perception/lidar_summary` 补齐，并与桥逐帧对照（950 帧、7 项距离量最大偏差 `9.1e-8 m`）。
+- 已实现：双车协同全流程仿真（雷达避障 → 视觉识别 → 侧面抓取 → 动态停靠 → 协同投放 → 倒车脱离 → 精准返航），75 kg 真实参数重载底盘，21 个随机种子的可回归验收；阶段 1 的三节点 ROS 2 骨架（`ros2_ws`）已在 Ubuntu 22.04 + 原生 Humble 上 `colcon build` 通过；阶段 2 把任务层拆到零 MuJoCo 的 `mission_core.py`，单进程与 ROS 2 共用同一份实现，端口扩到 `Lidar / object_pose / tool_position`，轨道 B（ROS 侧 21 个种子）同样 21/21，并由 `scripts/run_ros_matrix.py` 脚本化（并行 4 路、墙钟约 28 min，2026-11-23 按新模型与实车布置重跑）；真车避障链缺的"点云 → 雷达摘要"节点已在 `mm_perception/lidar_summary` 补齐，并与桥逐帧对照（950 帧、7 项距离量最大偏差 `9.1e-8 m`）。
 - 未实现：**实车接入**——底盘 CAN 驱动 `mm_base` 已经写好（厂家 `0x101–0x104`/`0x601–0x604` 协议、125 Hz 速度环、四轮差速里程计，Ubuntu 上过了 112 条自检与 loopback 端到端，见 `docs/can_driver.md`），但**没接过真车**；手眼标定、实车参数辨识同样待上车。软件侧能做的已做完：`scripts/bench_chassis.py`（架空/落地台架标定）、`docs/real_machine_calibration.md`（公差表：轮径 0.5%、相机 2 mm/0.1°、雷达 5 cm）、`mm_perception/lidar_summary`（点云→雷达摘要，与桥对照 950 帧、9.1e-8 m）。明确不做：bag 回放（只覆盖感知决策段——不录服务、不含物理结局）。待上车实测：摘要节点的安装高度与自身盲区、轮径真值、相机手眼、转矩指令的单位（源码只给了 ±1910 的钳位）。
 
 ## 3. 跨端协作环境
