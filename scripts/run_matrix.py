@@ -124,28 +124,31 @@ def run_one(seed: int, timeout: float, log_dir: Path) -> dict:
     command = [sys.executable, str(ENTRY), "--headless", "--seed", str(seed)]
     started = time.perf_counter()
     exit_code: int | str = 0
-    output = ""
     error: str | None = None
-    try:
-        proc = subprocess.run(
+    log_path = log_dir / f"seed_{seed}.log"
+    # 子进程直接写日志文件、不走管道：管道模式下子进程一旦卡死（曾出现：48 s CPU 之后
+    # 挂 33 min），父进程会跟着堵在 communicate() 里，连 timeout 都不生效，整个矩阵停摆。
+    # 落盘还顺带让"卡住时能看到卡在哪一行"。
+    with log_path.open("w", encoding="utf-8") as handle:
+        handle.write("# " + " ".join(command) + "\n")
+        handle.flush()
+        proc = subprocess.Popen(
             command,
             cwd=str(PROJECT),
             env=env,
-            capture_output=True,
-            timeout=timeout,
+            stdout=handle,
+            stderr=subprocess.STDOUT,
         )
-        exit_code = proc.returncode
-        output = proc.stdout.decode("utf-8", "replace")
-        stderr = proc.stderr.decode("utf-8", "replace")
-    except subprocess.TimeoutExpired as exc:
-        exit_code = "timeout"
-        output = (exc.stdout or b"").decode("utf-8", "replace")
-        stderr = (exc.stderr or b"").decode("utf-8", "replace")
-        error = f"TimeoutExpired after {timeout:.0f}s"
+        try:
+            exit_code = proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+            exit_code = "timeout"
+            error = f"TimeoutExpired after {timeout:.0f}s"
     wall_s = round(time.perf_counter() - started, 3)
 
-    log_path = log_dir / f"seed_{seed}.log"
-    log_path.write_text(output + "\n--- stderr ---\n" + stderr, encoding="utf-8")
+    output = log_path.read_text(encoding="utf-8", errors="replace")
 
     metrics = parse_result(output)
     if metrics is None:
