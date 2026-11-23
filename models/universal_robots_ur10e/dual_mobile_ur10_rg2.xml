@@ -1,0 +1,651 @@
+<mujoco model="ur10e_mobile">
+  <compiler angle="radian" meshdir="assets" autolimits="true" />
+
+  <option integrator="implicitfast" />
+
+  <default>
+    <default class="ur10e">
+      <material specular="0.5" shininess="0.25" />
+      <joint axis="0 1 0" range="-6.28319 6.28319" armature="0.1" />
+      <position ctrlrange="-6.2831 6.2831" />
+      <general biastype="affine" ctrlrange="-6.2831 6.2831" gainprm="5000" biasprm="0 -5000 -500" />
+      <default class="size4">
+        <joint damping="10" />
+        <general forcerange="-330 330" />
+      </default>
+      <default class="size3">
+        <joint damping="5" />
+        <general forcerange="-150 150" />
+        <default class="size3_limited">
+          <joint range="-3.1415 3.1415" />
+          <general ctrlrange="-3.1415 3.1415" />
+        </default>
+      </default>
+      <default class="size2">
+        <joint damping="2" />
+        <general forcerange="-56 56" />
+      </default>
+      <default class="rg2_visual">
+      <geom type="mesh" contype="0" conaffinity="0" group="2" />
+    </default>
+    <default class="visual">
+        <geom type="mesh" contype="0" conaffinity="0" group="2" />
+      </default>
+      <default class="collision">
+        <geom type="capsule" group="3" />
+        <default class="eef_collision">
+          <geom type="cylinder" />
+        </default>
+      </default>
+      <site size="0.001" rgba="0.5 0.5 0.5 0.3" group="4" />
+    </default>
+  <default class="2f85">
+      <mesh scale="0.001 0.001 0.001" />
+      <general biastype="affine" />
+
+      <joint axis="1 0 0" />
+      <default class="driver">
+        <joint range="0 0.8" armature="0.005" damping="0.1" solimplimit="0.95 0.99 0.001" solreflimit="0.005 1" />
+      </default>
+      <default class="follower">
+        <joint range="-0.872664 0.872664" armature="0.001" pos="0 -0.018 0.0065" solimplimit="0.95 0.99 0.001" solreflimit="0.005 1" />
+      </default>
+      <default class="spring_link">
+        <joint range="-0.29670597283 0.8" armature="0.001" stiffness="0.05" springref="2.62" damping="0.00125" />
+      </default>
+      <default class="coupler">
+        <joint range="-1.57 0" armature="0.001" solimplimit="0.95 0.99 0.001" solreflimit="0.005 1" />
+      </default>
+
+      <default class="2f85_visual">
+        <geom type="mesh" contype="0" conaffinity="0" group="2" />
+      </default>
+      <default class="2f85_collision">
+        <geom type="mesh" group="3" />
+        <default class="pad_box1">
+          <geom mass="0" type="box" pos="0 -0.0026 0.028125" size="0.011 0.004 0.009375" friction="0.7" solimp="0.95 0.99 0.001" solref="0.004 1" priority="1" rgba="0.55 0.55 0.55 1" />
+        </default>
+        <default class="pad_box2">
+          <geom mass="0" type="box" pos="0 -0.0026 0.009375" size="0.011 0.004 0.009375" friction="0.6" solimp="0.95 0.99 0.001" solref="0.004 1" priority="1" rgba="0.45 0.45 0.45 1" />
+        </default>
+      </default>
+    </default>
+  </default>
+
+  <asset>
+    <mesh name="rg2_body" file="rg2_body.stl" />
+    <material class="ur10e" name="black" rgba="0.033 0.033 0.033 1" />
+    <material class="ur10e" name="jointgray" rgba="0.278 0.278 0.278 1" />
+    <material class="ur10e" name="linkgray" rgba="0.82 0.82 0.82 1" />
+    <material class="ur10e" name="urblue" rgba="0.49 0.678 0.8 1" />
+
+    <mesh file="base_0.obj" />
+    <mesh file="base_1.obj" />
+    <mesh file="shoulder_0.obj" />
+    <mesh file="shoulder_1.obj" />
+    <mesh file="shoulder_2.obj" />
+    <mesh file="upperarm_0.obj" />
+    <mesh file="upperarm_1.obj" />
+    <mesh file="upperarm_2.obj" />
+    <mesh file="upperarm_3.obj" />
+    <mesh file="forearm_0.obj" />
+    <mesh file="forearm_1.obj" />
+    <mesh file="forearm_2.obj" />
+    <mesh file="forearm_3.obj" />
+    <mesh file="wrist1_0.obj" />
+    <mesh file="wrist1_1.obj" />
+    <mesh file="wrist1_2.obj" />
+    <mesh file="wrist2_0.obj" />
+    <mesh file="wrist2_1.obj" />
+    <mesh file="wrist2_2.obj" />
+    <mesh file="wrist3.obj" />
+  <material name="metal" rgba="0.58 0.58 0.58 1" />
+    <material name="silicone" rgba="0.1882 0.1882 0.1882 1" />
+    <material name="gray" rgba="0.4627 0.4627 0.4627 1" />
+    <mesh class="2f85" file="base_mount.stl" />
+    <mesh class="2f85" file="base.stl" />
+    <mesh class="2f85" file="driver.stl" />
+    <mesh class="2f85" file="coupler.stl" />
+    <mesh class="2f85" file="follower.stl" />
+    <mesh class="2f85" file="pad.stl" />
+    <mesh class="2f85" file="silicone_pad.stl" />
+    <mesh class="2f85" file="spring_link.stl" />
+  </asset>
+
+  <worldbody>
+    <light name="spotlight" mode="targetbodycom" target="wrist_2_link" pos="0 -1 2" />
+      <body name="mobile_chassis" pos="0 0 0">
+        <freejoint name="chassis_free" />
+
+        <!-- LiDAR tray sits exactly on the front/top edge. -->
+        <body name="lidar_mount" pos="0.3 0 0.40356">
+          <geom name="lidar_tray" type="cylinder" size="0.06 0.005" pos="0 0 -0.005"
+                mass="0" rgba="0.16 0.24 0.30 1" group="2" contype="0" conaffinity="0"/>
+          <geom name="lidar_housing" type="cylinder" size="0.035 0.025" pos="0 0 0"
+                mass="0" rgba="0.08 0.08 0.08 1" group="2" contype="0" conaffinity="0"/>
+        </body>
+        <site name="lidar_site" pos="0.3 0 0.40356" quat="1 0 0 0"
+              size="0.012" rgba="1 0 0 1" group="5"/>
+
+        <!-- 真实底盘包络：0.912 x 0.710 m，离地间隙 0.11 m，顶面（安装板）z=0.40356。
+             碰撞盒夹在两侧轮胎之间，四个轮子保持在盒体之外（轴距 0.50 m，轮距 0.555 m），
+             避免盒体与轮胎互相穿插。 -->
+        <geom name="chassis_collision" type="box" size="0.456 0.21 0.14678"
+              pos="0 0 0.25678" mass="65" group="3"
+              contype="1" conaffinity="1" friction="0.8 0.0 0.0"
+              condim="6" solref="0.005 1" solimp="0.95 0.99 0.001" />
+
+        <!-- 纯外观件：车身外壳、前后防撞管、顶部安装板，全部不参与碰撞。 -->
+        <geom name="chassis_visual" type="box" size="0.456 0.355 0.10678"
+              pos="0 0 0.29678" mass="0" group="2" rgba="0.16 0.32 0.50 1"
+              contype="0" conaffinity="0" />
+        <geom name="chassis_bumper_front" type="cylinder" size="0.032 0.33"
+              pos="0.452 0 0.215" quat="0.707107 0.707107 0 0" mass="0" group="2"
+              rgba="0.10 0.12 0.14 1" contype="0" conaffinity="0" />
+        <geom name="chassis_bumper_rear" type="cylinder" size="0.032 0.33"
+              pos="-0.452 0 0.215" quat="0.707107 0.707107 0 0" mass="0" group="2"
+              rgba="0.10 0.12 0.14 1" contype="0" conaffinity="0" />
+        <geom name="chassis_deck" type="box" size="0.40 0.31 0.01"
+              pos="0 0 0.39556" mass="0" group="2" rgba="0.20 0.24 0.28 1"
+              contype="0" conaffinity="0" />
+
+        <geom name="arm_pedestal" type="cylinder" size="0.09 0.005"
+              pos="0 0 0.40556" mass="0" group="2"
+              rgba="0.12 0.20 0.28 1" contype="0" conaffinity="0" />
+
+        <!-- Front wheels have steering pivots; all four wheels roll on the same
+             body so the differential controller is mechanically meaningful. -->
+        <!-- 前轮带转向节（控制器的运动学模型使用转向角 + 轮速差）；
+             真车标注为四轮差速转向，去掉转向节后实测原地转只有 0.13 rad/s、
+             且车体滑移 0.3 m，任务定位精度不够，故暂保留转向节作为等效机构。 -->
+        <body name="wheel_fl_steer" pos="0.25 0.2775 0.1525">
+          <inertial pos="0 0 0" mass="0.3" diaginertia="0.0002 0.0002 0.0004" />
+          <joint name="wheel_fl_steer_joint" type="hinge" axis="0 0 1"
+                 damping="0.10" armature="0.001" />
+          <body name="wheel_fl" pos="0 0 0">
+            <joint name="wheel_fl_joint" type="hinge" axis="0 1 0"
+                   damping="0.05" armature="0.01" />
+            <geom name="wheel_fl_geom" type="cylinder" size="0.1525 0.055"
+                  quat="0.707107 0.707107 0 0" mass="2.2"
+                  rgba="0.06 0.06 0.06 1" contype="1" conaffinity="1"
+                  friction="2.0 0.0 0.0" condim="6" solref="0.005 1"
+                  solimp="0.95 0.99 0.001" />
+          </body>
+        </body>
+
+        <body name="wheel_fr_steer" pos="0.25 -0.2775 0.1525">
+          <inertial pos="0 0 0" mass="0.3" diaginertia="0.0002 0.0002 0.0004" />
+          <joint name="wheel_fr_steer_joint" type="hinge" axis="0 0 1"
+                 damping="0.10" armature="0.001" />
+          <body name="wheel_fr" pos="0 0 0">
+            <joint name="wheel_fr_joint" type="hinge" axis="0 1 0"
+                   damping="0.05" armature="0.01" />
+            <geom name="wheel_fr_geom" type="cylinder" size="0.1525 0.055"
+                  quat="0.707107 0.707107 0 0" mass="2.2"
+                  rgba="0.06 0.06 0.06 1" contype="1" conaffinity="1"
+                  friction="2.0 0.0 0.0" condim="6" solref="0.005 1"
+                  solimp="0.95 0.99 0.001" />
+          </body>
+        </body>
+
+        <body name="wheel_rl" pos="-0.25 0.2775 0.1525">
+          <joint name="wheel_rl_joint" type="hinge" axis="0 1 0"
+                 damping="0.05" armature="0.01" />
+          <geom name="wheel_rl_geom" type="cylinder" size="0.1525 0.055"
+                quat="0.707107 0.707107 0 0" mass="2.5"
+                rgba="0.06 0.06 0.06 1" contype="1" conaffinity="1"
+                friction="2.0 0.0 0.0" condim="6" solref="0.005 1"
+                solimp="0.95 0.99 0.001" />
+        </body>
+
+        <body name="wheel_rr" pos="-0.25 -0.2775 0.1525">
+          <joint name="wheel_rr_joint" type="hinge" axis="0 1 0"
+                 damping="0.05" armature="0.01" />
+          <geom name="wheel_rr_geom" type="cylinder" size="0.1525 0.055"
+                quat="0.707107 0.707107 0 0" mass="2.5"
+                rgba="0.06 0.06 0.06 1" contype="1" conaffinity="1"
+                friction="2.0 0.0 0.0" condim="6" solref="0.005 1"
+                solimp="0.95 0.99 0.001" />
+        </body>
+
+        <body name="base" pos="0 0 0.40356" quat="0 0 0 -1" childclass="ur10e">
+      <inertial mass="4.0" pos="0 0 0" diaginertia="0.00610633089 0.00610633089 0.01125" />
+      <geom mesh="base_0" material="black" class="visual" />
+      <geom mesh="base_1" material="jointgray" class="visual" />
+      <body name="shoulder_link" pos="0 0 0.181">
+        <inertial pos="0 0 0" mass="7.1" diaginertia="0.0287307187 0.0287307187 0.0199687272" />
+        <joint name="shoulder_pan_joint" class="size4" axis="0 0 1" />
+        <geom mesh="shoulder_0" material="urblue" class="visual" />
+        <geom mesh="shoulder_1" material="black" class="visual" />
+        <geom mesh="shoulder_2" material="jointgray" class="visual" />
+        <geom class="collision" size="0.078 0.05" pos="0 0 -0.02" />
+        <body name="upper_arm_link" pos="0 0.176 0" quat="1 0 1 0">
+          <inertial pos="0 0 0.3065" mass="12.7" diaginertia="0.415548322 0.415548322 0.0357187254" />
+          <joint name="shoulder_lift_joint" class="size4" />
+          <geom mesh="upperarm_0" material="black" class="visual" />
+          <geom mesh="upperarm_1" material="jointgray" class="visual" />
+          <geom mesh="upperarm_2" material="urblue" class="visual" />
+          <geom mesh="upperarm_3" material="linkgray" class="visual" />
+          <geom class="collision" pos="0 -0.05 0" quat="1 1 0 0" size="0.078 0.08" />
+          <geom class="collision" size="0.06 0.3" pos="0 0 0.3" />
+          <body name="forearm_link" pos="0 -0.137 0.613">
+            <inertial pos="0 0 0.2855" mass="4.27" diaginertia="0.122020491 0.122020491 0.0120094026" />
+            <joint name="elbow_joint" class="size3_limited" />
+            <geom mesh="forearm_0" material="urblue" class="visual" />
+            <geom mesh="forearm_1" material="black" class="visual" />
+            <geom mesh="forearm_2" material="jointgray" class="visual" />
+            <geom mesh="forearm_3" material="linkgray" class="visual" />
+            <geom class="collision" pos="0 0.08 0" quat="1 1 0 0" size="0.058 0.065" />
+            <geom class="collision" size="0.043 0.28" pos="0 0 0.29" />
+            <body name="wrist_1_link" pos="0 0 0.571" quat="1 0 1 0">
+              <inertial pos="0 0.135 0" quat="0.5 0.5 -0.5 0.5" mass="2.0" diaginertia="0.005625 0.0052125 0.0052125" />
+              <joint name="wrist_1_joint" class="size2" />
+              <geom mesh="wrist1_0" material="black" class="visual" />
+              <geom mesh="wrist1_1" material="urblue" class="visual" />
+              <geom mesh="wrist1_2" material="jointgray" class="visual" />
+              <geom class="collision" pos="0 0.06 0" quat="1 1 0 0" size="0.05 0.07" />
+              <body name="wrist_2_link" pos="0 0.135 0">
+                <inertial pos="0 0 0.12" quat="0.5 0.5 -0.5 0.5" mass="2.0" diaginertia="0.005625 0.0052125 0.0052125" />
+                <joint name="wrist_2_joint" axis="0 0 1" class="size2" />
+                <geom mesh="wrist2_0" material="black" class="visual" />
+                <geom mesh="wrist2_1" material="urblue" class="visual" />
+                <geom mesh="wrist2_2" material="jointgray" class="visual" />
+                <geom class="collision" size="0.046 0.065" pos="0 0 0.05" />
+                <geom class="collision" pos="0 0.028 0.12" quat="1 1 0 0" size="0.046 0.043" />
+                <body name="wrist_3_link" pos="0 0 0.12">
+                  <inertial pos="0 0.092 0" quat="0 1 -1 0" mass="0.365" diaginertia="0.0003695625 0.000260823218 0.000260823218" />
+                  <joint name="wrist_3_joint" class="size2" />
+                  <geom material="linkgray" mesh="wrist3" class="visual" />
+                  <geom class="eef_collision" pos="0 0.097 0" quat="1 1 0 0" size="0.046 0.02" />
+                  <site name="attachment_site" pos="0 0.1 0" quat="-1 1 0 0" />
+                  <camera name="d435i" pos="0 0.12 0.20"
+                          quat="0.24469942 0.96735948 0.01622508 -0.06383244"
+                          fovy="42.6"/>
+                  
+<!-- OnRobot RG2 夹爪子树（MuJoCo 片段，供 scripts/build_rg2_model.py 拼装）。
+
+尺寸锚点（全部有出处，不是估的）：
+  · 法兰 → 夹爪体 50 mm、夹爪体 → 抓取点 140 mm：来自
+    github.com/inria-paris-robotics-lab/onrobot_ros（MIT）的 `rg2_v1.yaml`
+    origin.single_bracket / origin.grasp_frame，合计法兰到 TCP 190 mm。
+  · 夹爪体质量 0.65 kg、支架 0.09 kg：同上，且与 OnRobot 官方
+    《RG2 Center of mass》文件（Mass = 0.65 Kg）逐位一致。
+  · 指垫尺寸 11.5 × 20.0 × 29.5 mm：该包 `flex_finger.stl` 的实测包围盒。
+  · 行程 0~110 mm、夹持力 3~40 N：OnRobot RG2 datasheet v1.6。
+  · 夹爪体外廓 72.5 × 36.0 × 118.2 mm：`body.stl` 实测包围盒（厚度 36 mm
+    与 datasheet 的 213×149×36 对上）。
+
+简化（已在 docs 里写明）：RG2 内部是四连杆，但那套社区 URDF 的零位与关节行程
+对应不上（q=0 时指面间距 215 mm、q=1.3 时仍有 98 mm，永远合不拢），直接照搬会
+得到一个闭不上的夹爪。真实 RG2 的两个指面是**平行移动**的，所以这里按两指直线
+平移建模：几何锚点全部沿用上面的数字，机构简化不影响抓取判定。
+-->
+<body name="onrobot_rg2_mount" pos="0 0.1 0" quat="0.707107 -0.707107 0 0">
+  <!-- 工具系里 +z 朝工件、+y 是"两指分开的方向"——这是 2F-85 模型的约定，
+       `choose_grasp_spin` 按这个约定选自旋角。RG2 的指在自身 +x 方向开合，
+       所以整体绕 z 转 90°，把开合方向对到 +y，任务层一行都不用改。 -->
+  <body name="rg2_face" quat="0.707107 0 0 0.707107">
+  <!-- 法兰与本体之间的 50 mm 垫块 -->
+  <body name="rg2_bracket" pos="0 0 0">
+    <inertial pos="0 0 0.025" mass="0.09" diaginertia="5e-05 5e-05 8e-05" />
+    <geom name="rg2_bracket_geom" type="cylinder" size="0.045 0.025" pos="0 0 0.025"
+          contype="0" conaffinity="0" group="2" rgba="0.55 0.55 0.58 1" />
+
+    <body name="rg2_body" pos="0 0 0.05">
+      <inertial pos="0 0 0.018" mass="0.65" diaginertia="0.001 0.001 0.001" />
+      <geom name="rg2_body_visual" class="rg2_visual" mesh="rg2_body" material="black" />
+      <geom name="rg2_body_collision" type="box" pos="-0.001 0 0.018"
+            size="0.037 0.019 0.060" group="3" rgba="0.5 0.5 0.5 0.15" />
+
+      <!-- 抓取点：体坐标系 z+140 mm（URDF grasp_frame），落在两指垫的竖向中点。
+           site 的姿态必须与被替换掉的 2F-85 pinch 完全一致（那套模型是 Rx(-90°)·Rz(-90°)
+           的合成，这里是 Rx(-90°)·Rz(+90°)，再补一个 Rz(180°) 就对齐了）。差 180° 时
+           IK 会把腕部整体转过去，腕部相机跟着转走，观测位一个字都拍不到。 -->
+      <site name="pinch" pos="0 0 0.14" quat="0 0 0 1" type="sphere" group="5"
+            rgba="0.9 0.9 0.9 1" size="0.005" />
+
+      <!-- ===== 指 +x：qpos = 半开度 g，指面在 x=+g ===== -->
+      <body name="rg2_jaw_pos" pos="0 0 0.09">
+        <inertial pos="0.006 0 0.05" mass="0.02" diaginertia="2e-06 2e-06 4e-06" />
+        <joint name="rg2_jaw_pos_joint" type="slide" axis="1 0 0"
+               range="0.0005 0.055" damping="8" armature="0.01" />
+        <!-- 指垫：内侧面在局部 x=0，向下伸到 pinch 下方 14.75 mm -->
+        <geom name="rg2_jaw_pos_pad" type="box" pos="0.00575 0 0.05"
+              size="0.00575 0.010 0.01475" group="3"
+              friction="0.8" solimp="0.95 0.99 0.001" solref="0.004 1"
+              priority="1" rgba="0.9 0.75 0.3 0.45" />
+        <!-- 指杆：把指垫接到本体 -->
+        <geom name="rg2_jaw_pos_shank" type="box" pos="0.00575 0 0.085"
+              size="0.00575 0.009 0.026" group="3" rgba="0.8 0.8 0.8 0.15" />
+        <geom name="rg2_jaw_pos_visual" type="box" pos="0.00575 0 0.075"
+              size="0.0059 0.010 0.040" contype="0" conaffinity="0" group="2"
+              rgba="0.75 0.75 0.78 1" />
+      </body>
+
+      <!-- ===== 指 -x：轴取 -x，所以 qpos 同样是半开度 g ===== -->
+      <body name="rg2_jaw_neg" pos="0 0 0.09">
+        <inertial pos="-0.006 0 0.05" mass="0.02" diaginertia="2e-06 2e-06 4e-06" />
+        <joint name="rg2_jaw_neg_joint" type="slide" axis="-1 0 0"
+               range="0.0005 0.055" damping="8" armature="0.01" />
+        <geom name="rg2_jaw_neg_pad" type="box" pos="-0.00575 0 0.05"
+              size="0.00575 0.010 0.01475" group="3"
+              friction="0.8" solimp="0.95 0.99 0.001" solref="0.004 1"
+              priority="1" rgba="0.9 0.75 0.3 0.45" />
+        <geom name="rg2_jaw_neg_shank" type="box" pos="-0.00575 0 0.085"
+              size="0.00575 0.009 0.026" group="3" rgba="0.8 0.8 0.8 0.15" />
+        <geom name="rg2_jaw_neg_visual" type="box" pos="-0.00575 0 0.075"
+              size="0.0059 0.010 0.040" contype="0" conaffinity="0" group="2"
+              rgba="0.75 0.75 0.78 1" />
+      </body>
+    </body>
+  </body>
+  </body>
+</body></body>
+              </body>
+            </body>
+          </body>
+        </body>
+      </body>
+    </body>
+  </body>
+
+
+      <!-- ================= Car 2: transport platform ================= -->
+      <body name="car2_chassis" pos="2.0 -4.0 0">
+        <freejoint name="car2_chassis_free" />
+
+        <body name="car2_lidar_mount" pos="0.3 0 0.40356">
+          <geom name="car2_lidar_tray" type="cylinder" size="0.06 0.005" pos="0 0 -0.005"
+                mass="0" rgba="0.16 0.24 0.30 1" group="2"
+                contype="0" conaffinity="0"/>
+          <geom name="car2_lidar_housing" type="cylinder" size="0.035 0.025" pos="0 0 0"
+                mass="0" rgba="0.08 0.08 0.08 1" group="2"
+                contype="0" conaffinity="0"/>
+        </body>
+        <site name="car2_lidar_site" pos="0.3 0 0.40356" quat="1 0 0 0"
+              size="0.012" rgba="0 1 0 1" group="5"/>
+
+        <!-- 与一号车相同的真实底盘包络：0.912 x 0.710 m，离地 0.11 m，顶面 0.40356。 -->
+        <geom name="car2_chassis_collision" type="box" size="0.456 0.21 0.14678"
+              pos="0 0 0.25678" mass="65" group="3"
+              contype="1" conaffinity="1" friction="0.8 0.0 0.0"
+              condim="6" solref="0.005 1" solimp="0.95 0.99 0.001" />
+        <geom name="car2_chassis_visual" type="box" size="0.456 0.355 0.10678"
+              pos="0 0 0.29678" mass="0" group="2" rgba="0.16 0.48 0.34 1"
+              contype="0" conaffinity="0" />
+        <geom name="car2_bumper_front" type="cylinder" size="0.032 0.33"
+              pos="0.452 0 0.215" quat="0.707107 0.707107 0 0" mass="0" group="2"
+              rgba="0.10 0.12 0.14 1" contype="0" conaffinity="0" />
+        <geom name="car2_bumper_rear" type="cylinder" size="0.032 0.33"
+              pos="-0.452 0 0.215" quat="0.707107 0.707107 0 0" mass="0" group="2"
+              rgba="0.10 0.12 0.14 1" contype="0" conaffinity="0" />
+        <geom name="car2_deck" type="box" size="0.40 0.31 0.01"
+              pos="0 0 0.39556" mass="0" group="2" rgba="0.20 0.24 0.28 1"
+              contype="0" conaffinity="0" />
+
+        <body name="car2_wheel_fl_steer" pos="0.25 0.2775 0.1525">
+          <inertial pos="0 0 0" mass="0.3" diaginertia="0.0002 0.0002 0.0004" />
+          <joint name="car2_wheel_fl_steer_joint" type="hinge" axis="0 0 1"
+                 damping="0.10" armature="0.001" />
+          <body name="car2_wheel_fl" pos="0 0 0">
+            <joint name="car2_wheel_fl_joint" type="hinge" axis="0 1 0"
+                   damping="0.05" armature="0.01" />
+            <geom name="car2_wheel_fl_geom" type="cylinder" size="0.1525 0.055"
+                  quat="0.707107 0.707107 0 0" mass="2.2"
+                  rgba="0.06 0.06 0.06 1" contype="1" conaffinity="1"
+                  friction="2.0 0.0 0.0" condim="6" solref="0.005 1"
+                  solimp="0.95 0.99 0.001" />
+          </body>
+        </body>
+
+        <body name="car2_wheel_fr_steer" pos="0.25 -0.2775 0.1525">
+          <inertial pos="0 0 0" mass="0.3" diaginertia="0.0002 0.0002 0.0004" />
+          <joint name="car2_wheel_fr_steer_joint" type="hinge" axis="0 0 1"
+                 damping="0.10" armature="0.001" />
+          <body name="car2_wheel_fr" pos="0 0 0">
+            <joint name="car2_wheel_fr_joint" type="hinge" axis="0 1 0"
+                   damping="0.05" armature="0.01" />
+            <geom name="car2_wheel_fr_geom" type="cylinder" size="0.1525 0.055"
+                  quat="0.707107 0.707107 0 0" mass="2.2"
+                  rgba="0.06 0.06 0.06 1" contype="1" conaffinity="1"
+                  friction="2.0 0.0 0.0" condim="6" solref="0.005 1"
+                  solimp="0.95 0.99 0.001" />
+          </body>
+        </body>
+
+        <body name="car2_wheel_rl" pos="-0.25 0.2775 0.1525">
+          <joint name="car2_wheel_rl_joint" type="hinge" axis="0 1 0"
+                 damping="0.05" armature="0.01" />
+          <geom name="car2_wheel_rl_geom" type="cylinder" size="0.1525 0.055"
+                quat="0.707107 0.707107 0 0" mass="2.5"
+                rgba="0.06 0.06 0.06 1" contype="1" conaffinity="1"
+                friction="2.0 0.0 0.0" condim="6" solref="0.005 1"
+                solimp="0.95 0.99 0.001" />
+        </body>
+
+        <body name="car2_wheel_rr" pos="-0.25 -0.2775 0.1525">
+          <joint name="car2_wheel_rr_joint" type="hinge" axis="0 1 0"
+                 damping="0.05" armature="0.01" />
+          <geom name="car2_wheel_rr_geom" type="cylinder" size="0.1525 0.055"
+                quat="0.707107 0.707107 0 0" mass="2.5"
+                rgba="0.06 0.06 0.06 1" contype="1" conaffinity="1"
+                friction="2.0 0.0 0.0" condim="6" solref="0.005 1"
+                solimp="0.95 0.99 0.001" />
+        </body>
+
+        <!-- Shield bucket: 32 边圆筒，内径 Ø400、外高 260（底 20 + 壁 240，内深 240）。
+             桶口比 202 mm 的筷子长得多（可容忍桶心偏差约 98 mm，Ø240 时只有 18 mm），
+             夹住粗端的机械臂把质心对准桶心后松爪，筷子整根自由落进桶底。
+             32 边的视觉半径误差约 0.6 mm；碰撞仍用标准盒体，因为 MuJoCo 的 mesh 碰撞
+             只支持凸包，做不出空心筒。桶重仍按 3 kg 估（实物未知，只改几何不动质量）。 -->
+        <body name="car2_shield_bucket" pos="0 0 0.40356">
+          <geom name="car2_bucket_bottom" type="cylinder" size="0.2000 0.01" pos="0 0 0.01"
+                mass="1.0" material="bucket_mat" contype="1" conaffinity="1"
+                friction="2.0 1.0 0.5" condim="6" solref="0.004 1"
+                solimp="0.95 0.99 0.001" />
+          <geom name="car2_bucket_wall_0" type="box" size="0.005 0.02009 0.120"
+                pos="0.205000 0.000000 0.1400" quat="1.000000 0 0 0.000000" mass="0.0625"
+                material="bucket_mat" contype="1" conaffinity="1"
+                friction="2.0 1.0 0.5" condim="6" solref="0.004 1"
+                solimp="0.95 0.99 0.001" />
+          <geom name="car2_bucket_wall_1" type="box" size="0.005 0.02009 0.120"
+                pos="0.201061 0.039994 0.1400" quat="0.995185 0 0 0.098017" mass="0.0625"
+                material="bucket_mat" contype="1" conaffinity="1"
+                friction="2.0 1.0 0.5" condim="6" solref="0.004 1"
+                solimp="0.95 0.99 0.001" />
+          <geom name="car2_bucket_wall_2" type="box" size="0.005 0.02009 0.120"
+                pos="0.189395 0.078450 0.1400" quat="0.980785 0 0 0.195090" mass="0.0625"
+                material="bucket_mat" contype="1" conaffinity="1"
+                friction="2.0 1.0 0.5" condim="6" solref="0.004 1"
+                solimp="0.95 0.99 0.001" />
+          <geom name="car2_bucket_wall_3" type="box" size="0.005 0.02009 0.120"
+                pos="0.170451 0.113892 0.1400" quat="0.956940 0 0 0.290285" mass="0.0625"
+                material="bucket_mat" contype="1" conaffinity="1"
+                friction="2.0 1.0 0.5" condim="6" solref="0.004 1"
+                solimp="0.95 0.99 0.001" />
+          <geom name="car2_bucket_wall_4" type="box" size="0.005 0.02009 0.120"
+                pos="0.144957 0.144957 0.1400" quat="0.923880 0 0 0.382683" mass="0.0625"
+                material="bucket_mat" contype="1" conaffinity="1"
+                friction="2.0 1.0 0.5" condim="6" solref="0.004 1"
+                solimp="0.95 0.99 0.001" />
+          <geom name="car2_bucket_wall_5" type="box" size="0.005 0.02009 0.120"
+                pos="0.113892 0.170451 0.1400" quat="0.881921 0 0 0.471397" mass="0.0625"
+                material="bucket_mat" contype="1" conaffinity="1"
+                friction="2.0 1.0 0.5" condim="6" solref="0.004 1"
+                solimp="0.95 0.99 0.001" />
+          <geom name="car2_bucket_wall_6" type="box" size="0.005 0.02009 0.120"
+                pos="0.078450 0.189395 0.1400" quat="0.831470 0 0 0.555570" mass="0.0625"
+                material="bucket_mat" contype="1" conaffinity="1"
+                friction="2.0 1.0 0.5" condim="6" solref="0.004 1"
+                solimp="0.95 0.99 0.001" />
+          <geom name="car2_bucket_wall_7" type="box" size="0.005 0.02009 0.120"
+                pos="0.039994 0.201061 0.1400" quat="0.773010 0 0 0.634393" mass="0.0625"
+                material="bucket_mat" contype="1" conaffinity="1"
+                friction="2.0 1.0 0.5" condim="6" solref="0.004 1"
+                solimp="0.95 0.99 0.001" />
+          <geom name="car2_bucket_wall_8" type="box" size="0.005 0.02009 0.120"
+                pos="0.000000 0.205000 0.1400" quat="0.707107 0 0 0.707107" mass="0.0625"
+                material="bucket_mat" contype="1" conaffinity="1"
+                friction="2.0 1.0 0.5" condim="6" solref="0.004 1"
+                solimp="0.95 0.99 0.001" />
+          <geom name="car2_bucket_wall_9" type="box" size="0.005 0.02009 0.120"
+                pos="-0.039994 0.201061 0.1400" quat="0.634393 0 0 0.773010" mass="0.0625"
+                material="bucket_mat" contype="1" conaffinity="1"
+                friction="2.0 1.0 0.5" condim="6" solref="0.004 1"
+                solimp="0.95 0.99 0.001" />
+          <geom name="car2_bucket_wall_10" type="box" size="0.005 0.02009 0.120"
+                pos="-0.078450 0.189395 0.1400" quat="0.555570 0 0 0.831470" mass="0.0625"
+                material="bucket_mat" contype="1" conaffinity="1"
+                friction="2.0 1.0 0.5" condim="6" solref="0.004 1"
+                solimp="0.95 0.99 0.001" />
+          <geom name="car2_bucket_wall_11" type="box" size="0.005 0.02009 0.120"
+                pos="-0.113892 0.170451 0.1400" quat="0.471397 0 0 0.881921" mass="0.0625"
+                material="bucket_mat" contype="1" conaffinity="1"
+                friction="2.0 1.0 0.5" condim="6" solref="0.004 1"
+                solimp="0.95 0.99 0.001" />
+          <geom name="car2_bucket_wall_12" type="box" size="0.005 0.02009 0.120"
+                pos="-0.144957 0.144957 0.1400" quat="0.382683 0 0 0.923880" mass="0.0625"
+                material="bucket_mat" contype="1" conaffinity="1"
+                friction="2.0 1.0 0.5" condim="6" solref="0.004 1"
+                solimp="0.95 0.99 0.001" />
+          <geom name="car2_bucket_wall_13" type="box" size="0.005 0.02009 0.120"
+                pos="-0.170451 0.113892 0.1400" quat="0.290285 0 0 0.956940" mass="0.0625"
+                material="bucket_mat" contype="1" conaffinity="1"
+                friction="2.0 1.0 0.5" condim="6" solref="0.004 1"
+                solimp="0.95 0.99 0.001" />
+          <geom name="car2_bucket_wall_14" type="box" size="0.005 0.02009 0.120"
+                pos="-0.189395 0.078450 0.1400" quat="0.195090 0 0 0.980785" mass="0.0625"
+                material="bucket_mat" contype="1" conaffinity="1"
+                friction="2.0 1.0 0.5" condim="6" solref="0.004 1"
+                solimp="0.95 0.99 0.001" />
+          <geom name="car2_bucket_wall_15" type="box" size="0.005 0.02009 0.120"
+                pos="-0.201061 0.039994 0.1400" quat="0.098017 0 0 0.995185" mass="0.0625"
+                material="bucket_mat" contype="1" conaffinity="1"
+                friction="2.0 1.0 0.5" condim="6" solref="0.004 1"
+                solimp="0.95 0.99 0.001" />
+          <geom name="car2_bucket_wall_16" type="box" size="0.005 0.02009 0.120"
+                pos="-0.205000 0.000000 0.1400" quat="0.000000 0 0 1.000000" mass="0.0625"
+                material="bucket_mat" contype="1" conaffinity="1"
+                friction="2.0 1.0 0.5" condim="6" solref="0.004 1"
+                solimp="0.95 0.99 0.001" />
+          <geom name="car2_bucket_wall_17" type="box" size="0.005 0.02009 0.120"
+                pos="-0.201061 -0.039994 0.1400" quat="-0.098017 0 0 0.995185" mass="0.0625"
+                material="bucket_mat" contype="1" conaffinity="1"
+                friction="2.0 1.0 0.5" condim="6" solref="0.004 1"
+                solimp="0.95 0.99 0.001" />
+          <geom name="car2_bucket_wall_18" type="box" size="0.005 0.02009 0.120"
+                pos="-0.189395 -0.078450 0.1400" quat="-0.195090 0 0 0.980785" mass="0.0625"
+                material="bucket_mat" contype="1" conaffinity="1"
+                friction="2.0 1.0 0.5" condim="6" solref="0.004 1"
+                solimp="0.95 0.99 0.001" />
+          <geom name="car2_bucket_wall_19" type="box" size="0.005 0.02009 0.120"
+                pos="-0.170451 -0.113892 0.1400" quat="-0.290285 0 0 0.956940" mass="0.0625"
+                material="bucket_mat" contype="1" conaffinity="1"
+                friction="2.0 1.0 0.5" condim="6" solref="0.004 1"
+                solimp="0.95 0.99 0.001" />
+          <geom name="car2_bucket_wall_20" type="box" size="0.005 0.02009 0.120"
+                pos="-0.144957 -0.144957 0.1400" quat="-0.382683 0 0 0.923880" mass="0.0625"
+                material="bucket_mat" contype="1" conaffinity="1"
+                friction="2.0 1.0 0.5" condim="6" solref="0.004 1"
+                solimp="0.95 0.99 0.001" />
+          <geom name="car2_bucket_wall_21" type="box" size="0.005 0.02009 0.120"
+                pos="-0.113892 -0.170451 0.1400" quat="-0.471397 0 0 0.881921" mass="0.0625"
+                material="bucket_mat" contype="1" conaffinity="1"
+                friction="2.0 1.0 0.5" condim="6" solref="0.004 1"
+                solimp="0.95 0.99 0.001" />
+          <geom name="car2_bucket_wall_22" type="box" size="0.005 0.02009 0.120"
+                pos="-0.078450 -0.189395 0.1400" quat="-0.555570 0 0 0.831470" mass="0.0625"
+                material="bucket_mat" contype="1" conaffinity="1"
+                friction="2.0 1.0 0.5" condim="6" solref="0.004 1"
+                solimp="0.95 0.99 0.001" />
+          <geom name="car2_bucket_wall_23" type="box" size="0.005 0.02009 0.120"
+                pos="-0.039994 -0.201061 0.1400" quat="-0.634393 0 0 0.773010" mass="0.0625"
+                material="bucket_mat" contype="1" conaffinity="1"
+                friction="2.0 1.0 0.5" condim="6" solref="0.004 1"
+                solimp="0.95 0.99 0.001" />
+          <geom name="car2_bucket_wall_24" type="box" size="0.005 0.02009 0.120"
+                pos="-0.000000 -0.205000 0.1400" quat="-0.707107 0 0 0.707107" mass="0.0625"
+                material="bucket_mat" contype="1" conaffinity="1"
+                friction="2.0 1.0 0.5" condim="6" solref="0.004 1"
+                solimp="0.95 0.99 0.001" />
+          <geom name="car2_bucket_wall_25" type="box" size="0.005 0.02009 0.120"
+                pos="0.039994 -0.201061 0.1400" quat="-0.773010 0 0 0.634393" mass="0.0625"
+                material="bucket_mat" contype="1" conaffinity="1"
+                friction="2.0 1.0 0.5" condim="6" solref="0.004 1"
+                solimp="0.95 0.99 0.001" />
+          <geom name="car2_bucket_wall_26" type="box" size="0.005 0.02009 0.120"
+                pos="0.078450 -0.189395 0.1400" quat="-0.831470 0 0 0.555570" mass="0.0625"
+                material="bucket_mat" contype="1" conaffinity="1"
+                friction="2.0 1.0 0.5" condim="6" solref="0.004 1"
+                solimp="0.95 0.99 0.001" />
+          <geom name="car2_bucket_wall_27" type="box" size="0.005 0.02009 0.120"
+                pos="0.113892 -0.170451 0.1400" quat="-0.881921 0 0 0.471397" mass="0.0625"
+                material="bucket_mat" contype="1" conaffinity="1"
+                friction="2.0 1.0 0.5" condim="6" solref="0.004 1"
+                solimp="0.95 0.99 0.001" />
+          <geom name="car2_bucket_wall_28" type="box" size="0.005 0.02009 0.120"
+                pos="0.144957 -0.144957 0.1400" quat="-0.923880 0 0 0.382683" mass="0.0625"
+                material="bucket_mat" contype="1" conaffinity="1"
+                friction="2.0 1.0 0.5" condim="6" solref="0.004 1"
+                solimp="0.95 0.99 0.001" />
+          <geom name="car2_bucket_wall_29" type="box" size="0.005 0.02009 0.120"
+                pos="0.170451 -0.113892 0.1400" quat="-0.956940 0 0 0.290285" mass="0.0625"
+                material="bucket_mat" contype="1" conaffinity="1"
+                friction="2.0 1.0 0.5" condim="6" solref="0.004 1"
+                solimp="0.95 0.99 0.001" />
+          <geom name="car2_bucket_wall_30" type="box" size="0.005 0.02009 0.120"
+                pos="0.189395 -0.078450 0.1400" quat="-0.980785 0 0 0.195090" mass="0.0625"
+                material="bucket_mat" contype="1" conaffinity="1"
+                friction="2.0 1.0 0.5" condim="6" solref="0.004 1"
+                solimp="0.95 0.99 0.001" />
+          <geom name="car2_bucket_wall_31" type="box" size="0.005 0.02009 0.120"
+                pos="0.201061 -0.039994 0.1400" quat="-0.995185 0 0 0.098017" mass="0.0625"
+                material="bucket_mat" contype="1" conaffinity="1"
+                friction="2.0 1.0 0.5" condim="6" solref="0.004 1"
+                solimp="0.95 0.99 0.001" />
+        </body>
+      </body>
+  </worldbody>
+
+
+  <contact>
+    <exclude body1="mobile_chassis" body2="base" />
+    <exclude body1="mobile_chassis" body2="shoulder_link" />
+    <exclude body1="mobile_chassis" body2="upper_arm_link" />
+    <exclude body1="mobile_chassis" body2="forearm_link" />
+    <exclude body1="mobile_chassis" body2="wrist_1_link" />
+    <exclude body1="mobile_chassis" body2="wrist_2_link" />
+    <exclude body1="mobile_chassis" body2="wrist_3_link" />
+    
+    
+    
+    
+    
+    
+      <exclude body1="mobile_chassis" body2="wheel_fl" />
+    <exclude body1="mobile_chassis" body2="wheel_fr" />
+    <exclude body1="mobile_chassis" body2="wheel_rl" />
+    <exclude body1="mobile_chassis" body2="wheel_rr" />
+    <exclude body1="car2_chassis" body2="car2_wheel_fl" />
+    <exclude body1="car2_chassis" body2="car2_wheel_fr" />
+    <exclude body1="car2_chassis" body2="car2_wheel_rl" />
+    <exclude body1="car2_chassis" body2="car2_wheel_rr" />
+</contact>
+  
+
+  <equality>
+    <joint joint1="rg2_jaw_pos_joint" joint2="rg2_jaw_neg_joint" polycoef="0 1 0 0 0" solimp="0.95 0.99 0.001" solref="0.005 1" />
+  </equality>
+
+  
+  <actuator>
+    <general name="fingers_actuator" joint="rg2_jaw_pos_joint" ctrlrange="0.0005 0.055"
+             forcerange="-40 40" gainprm="4000 0 0" biasprm="0 -4000 -20" />
+    <general class="size4" name="shoulder_pan" joint="shoulder_pan_joint" />
+    <general class="size4" name="shoulder_lift" joint="shoulder_lift_joint" />
+    <general class="size3_limited" name="elbow" joint="elbow_joint" />
+    <general class="size2" name="wrist_1" joint="wrist_1_joint" />
+    <general class="size2" name="wrist_2" joint="wrist_2_joint" />
+    <general class="size2" name="wrist_3" joint="wrist_3_joint" />
+  </actuator>
+</mujoco>

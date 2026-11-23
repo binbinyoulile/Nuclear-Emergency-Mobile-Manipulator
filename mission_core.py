@@ -106,16 +106,28 @@ SKID_TURN_SPINDOWN_TIME = 0.35
 # 机械臂与夹爪：姿态、站点高度与动作时长。
 # ---------------------------------------------------------------------------
 GROUND_Z = 0.0
-# 夹爪几何实测（以 pinch 站点为原点，竖直方向）：闭合时夹持面覆盖 pinch 下方 17.7 mm 到
-# 上方 20.0 mm，张开时下沿只在 pinch 下方 4.5 mm。由此推出"自上而下夹一根平躺圆棒"的
-# 可行带：pinch 必须落在离地 17.7~20.7 mm 之间——低了指尖会压进地面（闭合被地面顶住），
-# 高了夹持面盖不到棒身最宽处。取中间值，闭合后指尖离地约 0.8 mm。
-PINCH_ABOVE_FLOOR = 0.0185
+# 夹爪几何（OnRobot RG2，以 pinch 站点为原点，竖直方向）：两指垫各半高 14.75 mm、中心与
+# pinch 同高（`scripts/check_rg2_model.py` 实测 dz=0），所以夹持面覆盖 pinch 上下各
+# 14.75 mm。由此推出"自上而下夹一根平躺圆棒"的可行带：pinch 必须落在离地 14.75~17.75 mm
+# 之间——低了指垫底面压进地面，高了夹持面盖不到棒身最宽处（Ø6 杆中心离地 3 mm）。
+# 取中间值，闭合后指垫底面离地约 1.5 mm。
+# 换成 2F-85 旧模型时这条带是 17.7~20.7 mm，两指垫比 RG2 长 3 mm。
+PINCH_ABOVE_FLOOR = 0.01625
 GRASP_WORLD_Z = GROUND_Z + PINCH_ABOVE_FLOOR
 APPROACH_WORLD_Z = GRASP_WORLD_Z + 0.17
 LIFT_WORLD_Z = GRASP_WORLD_Z + 0.30
+# 工具长度差：2F-85 的 pinch 在腕部原点外 0.2558 m，OnRobot RG2 是 0.2900 m（长 34.2 mm）。
+# 换工具后搬运姿态**不需要**补偿抓取点高度：pinch 保持 0.45 m 时，RG2 的腕部自然比原来高
+# 34 mm，离底盘甲板更远，反而更安全。真正要处理的是 IK 分支——不指定种子时，更长的工具会
+# 把解推到"腕部转 180°"的另一支上（实测 joint1 从 −4.07 变成 +0.95），腕部相机跟着转走，
+# 观测位连杆都拍不到。所以搬运姿态固定用基线种子 CARRY_SEED_Q 求解。
+TOOL_LENGTH_DELTA = 0.0342
 # 搬运姿态，位于底盘轮廓内；**固定基座坐标系**（arm_ik_scene.xml 的 base 体）。
 CARRY_FIXED = np.array([0.20, 0.0, 0.45])
+# 2F-85 时代的搬运姿态解，作为 RG2 的 IK 种子，保证落在同一支上（见上面的说明）。
+CARRY_SEED_Q = np.array(
+    [-4.070902, -2.609742, 2.224456, -1.185309, -1.574098, -0.928937]
+)
 # 工具坐标系 +Y 轴朝下，wxyz。
 TARGET_QUAT = np.array([0.0, 1.0, 0.0, 0.0])
 # 底盘臂座系 → 固定基座（IK 模型）系的旋转固定值。arm_ik_scene.xml 里 base 体相对底盘
@@ -125,8 +137,10 @@ TARGET_QUAT = np.array([0.0, 1.0, 0.0, 0.0])
 # 漏掉不会报错，只会让机械臂安静地走到镜像位置上——历史上真的这样错过一次。
 # 单进程后端不需要它：solve_ik_fixed 直接吃固定基座系，没有中间坐标系。
 FIXED_BASE_ROT = np.diag([-1.0, -1.0, 1.0])
-FINGER_OPEN = 0.0
-FINGER_CLOSE = 255.0
+# RG2 的夹爪执行器 ctrl 直接就是半开度 g（米）：0.055 全开（指面间隙 110 mm）、
+# 0.0005 全闭（间隙 1 mm，远小于 Ø6 杆，所以能夹住）。
+FINGER_OPEN = 0.055
+FINGER_CLOSE = 0.0005
 
 # 动作时长，单位 s。
 APPROACH_TIME = 2.0
@@ -1320,9 +1334,9 @@ def execute_grasp_concurrent(
     IK 不可达或姿态搜索失败时由底层抛 RuntimeError。
 重要性等级：A"""
     print("\n[GRASP] CAR1 arm starts while CAR2 continues driving")
-    # 夹爪几何实测（pinch 站点为原点）：夹持面闭合时覆盖 pinch 下方 17.7 mm 到上方
-    # 20.0 mm，张开时下沿只在 pinch 下方 4.5 mm。因此 pinch 必须停在离地 17.7~20.7 mm
-    # 这条带里才能夹住一根平躺的 Ø6 圆棒（见 PINCH_ABOVE_FLOOR）。
+    # 夹爪几何（pinch 站点为原点）：RG2 两指垫各半高 14.75 mm、中心与 pinch 同高，
+    # 因此 pinch 必须停在离地 14.75~17.75 mm 这条带里，才能让夹持面盖住一根平躺的
+    # Ø6 圆棒（棒心离地 3 mm）又不让指垫底面压进地面（见 PINCH_ABOVE_FLOOR）。
     approach = np.array([target_pos[0], target_pos[1], APPROACH_WORLD_Z])
     grasp = np.array([target_pos[0], target_pos[1], GRASP_WORLD_Z])
     lift = np.array([target_pos[0], target_pos[1], LIFT_WORLD_Z])

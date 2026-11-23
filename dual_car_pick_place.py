@@ -39,7 +39,7 @@ from PIL import Image
 
 HERE = Path(os.path.abspath(__file__)).parent
 SNAPSHOT_DIR = HERE / "docs" / "screenshots"
-os.environ.setdefault("MOBILE_SCENE_PATH", str(HERE / "dual_car_scene.xml"))
+os.environ.setdefault("MOBILE_SCENE_PATH", str(HERE / "dual_car_scene_rg2.xml"))  # UR10+RG2；换回 2F-85 用 dual_car_scene.xml
 
 import mobile_pick_place as base  # noqa: E402
 import mission_core  # noqa: E402

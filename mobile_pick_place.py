@@ -32,6 +32,7 @@ from mission_core import (  # noqa: E402
     APPROACH_TIME,
     APPROACH_WORLD_Z,
     CARRY_FIXED,
+    CARRY_SEED_Q,
     CARRY_TIME,
     CHASSIS_SETTLE_TIME,
     CLOSE_TIME,
@@ -353,7 +354,7 @@ def _solve_ik_once(
     return cfg.q[:6].copy(), error
 
 
-CARRY_Q, CARRY_IK_ERROR = solve_ik_fixed(CARRY_FIXED, TARGET_QUAT)
+CARRY_Q, CARRY_IK_ERROR = solve_ik_fixed(CARRY_FIXED, TARGET_QUAT, seed_q=CARRY_SEED_Q)
 
 
 def world_target_to_fixed(target_world: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -514,10 +515,10 @@ class ArmMotion:
 
 
 class FingerMotion:
-    """管理 Robotiq 2F-85 夹爪单执行器的开合运动。
+    """管理夹爪单执行器的开合运动（当前模型为 OnRobot RG2）。
 
 控制约定：
-    FINGER_OPEN=0.0，FINGER_CLOSE=255.0；数值范围由 XML 执行器 ctrlrange 决定。
+    FINGER_OPEN=0.055，FINGER_CLOSE=0.0005；数值就是半开度（米），范围由 XML 执行器 ctrlrange 决定。
 重要性等级：A"""
     def __init__(self) -> None:
         """初始化夹爪为张开且非运动状态。
@@ -543,7 +544,7 @@ class FingerMotion:
         """启动夹爪开合插值。
 
 参数：
-    target: 目标执行器控制量，典型值为 0.0 或 255.0。
+    target: 目标执行器控制量，典型值为 FINGER_OPEN 或 FINGER_CLOSE。
     duration: 插值时长，单位 s。
 副作用：
     从当前 ctrl 值开始过渡，避免阶跃冲击。

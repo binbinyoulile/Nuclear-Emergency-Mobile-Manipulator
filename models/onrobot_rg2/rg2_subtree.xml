@@ -1,0 +1,79 @@
+<!-- OnRobot RG2 夹爪子树（MuJoCo 片段，供 scripts/build_rg2_model.py 拼装）。
+
+尺寸锚点（全部有出处，不是估的）：
+  · 法兰 → 夹爪体 50 mm、夹爪体 → 抓取点 140 mm：来自
+    github.com/inria-paris-robotics-lab/onrobot_ros（MIT）的 `rg2_v1.yaml`
+    origin.single_bracket / origin.grasp_frame，合计法兰到 TCP 190 mm。
+  · 夹爪体质量 0.65 kg、支架 0.09 kg：同上，且与 OnRobot 官方
+    《RG2 Center of mass》文件（Mass = 0.65 Kg）逐位一致。
+  · 指垫尺寸 11.5 × 20.0 × 29.5 mm：该包 `flex_finger.stl` 的实测包围盒。
+  · 行程 0~110 mm、夹持力 3~40 N：OnRobot RG2 datasheet v1.6。
+  · 夹爪体外廓 72.5 × 36.0 × 118.2 mm：`body.stl` 实测包围盒（厚度 36 mm
+    与 datasheet 的 213×149×36 对上）。
+
+简化（已在 docs 里写明）：RG2 内部是四连杆，但那套社区 URDF 的零位与关节行程
+对应不上（q=0 时指面间距 215 mm、q=1.3 时仍有 98 mm，永远合不拢），直接照搬会
+得到一个闭不上的夹爪。真实 RG2 的两个指面是**平行移动**的，所以这里按两指直线
+平移建模：几何锚点全部沿用上面的数字，机构简化不影响抓取判定。
+-->
+<body name="onrobot_rg2_mount" pos="0 0.1 0" quat="0.707107 -0.707107 0 0">
+  <!-- 工具系里 +z 朝工件、+y 是"两指分开的方向"——这是 2F-85 模型的约定，
+       `choose_grasp_spin` 按这个约定选自旋角。RG2 的指在自身 +x 方向开合，
+       所以整体绕 z 转 90°，把开合方向对到 +y，任务层一行都不用改。 -->
+  <body name="rg2_face" quat="0.707107 0 0 0.707107">
+  <!-- 法兰与本体之间的 50 mm 垫块 -->
+  <body name="rg2_bracket" pos="0 0 0">
+    <inertial pos="0 0 0.025" mass="0.09" diaginertia="5e-05 5e-05 8e-05" />
+    <geom name="rg2_bracket_geom" type="cylinder" size="0.045 0.025" pos="0 0 0.025"
+          contype="0" conaffinity="0" group="2" rgba="0.55 0.55 0.58 1" />
+
+    <body name="rg2_body" pos="0 0 0.05">
+      <inertial pos="0 0 0.018" mass="0.65" diaginertia="0.001 0.001 0.001" />
+      <geom name="rg2_body_visual" class="rg2_visual" mesh="rg2_body" material="black" />
+      <geom name="rg2_body_collision" type="box" pos="-0.001 0 0.018"
+            size="0.037 0.019 0.060" group="3" rgba="0.5 0.5 0.5 0.15" />
+
+      <!-- 抓取点：体坐标系 z+140 mm（URDF grasp_frame），落在两指垫的竖向中点。
+           site 的姿态必须与被替换掉的 2F-85 pinch 完全一致（那套模型是 Rx(-90°)·Rz(-90°)
+           的合成，这里是 Rx(-90°)·Rz(+90°)，再补一个 Rz(180°) 就对齐了）。差 180° 时
+           IK 会把腕部整体转过去，腕部相机跟着转走，观测位一个字都拍不到。 -->
+      <site name="pinch" pos="0 0 0.14" quat="0 0 0 1" type="sphere" group="5"
+            rgba="0.9 0.9 0.9 1" size="0.005" />
+
+      <!-- ===== 指 +x：qpos = 半开度 g，指面在 x=+g ===== -->
+      <body name="rg2_jaw_pos" pos="0 0 0.09">
+        <inertial pos="0.006 0 0.05" mass="0.02" diaginertia="2e-06 2e-06 4e-06" />
+        <joint name="rg2_jaw_pos_joint" type="slide" axis="1 0 0"
+               range="0.0005 0.055" damping="8" armature="0.01" />
+        <!-- 指垫：内侧面在局部 x=0，向下伸到 pinch 下方 14.75 mm -->
+        <geom name="rg2_jaw_pos_pad" type="box" pos="0.00575 0 0.05"
+              size="0.00575 0.010 0.01475" group="3"
+              friction="0.8" solimp="0.95 0.99 0.001" solref="0.004 1"
+              priority="1" rgba="0.9 0.75 0.3 0.45" />
+        <!-- 指杆：把指垫接到本体 -->
+        <geom name="rg2_jaw_pos_shank" type="box" pos="0.00575 0 0.085"
+              size="0.00575 0.009 0.026" group="3" rgba="0.8 0.8 0.8 0.15" />
+        <geom name="rg2_jaw_pos_visual" type="box" pos="0.00575 0 0.075"
+              size="0.0059 0.010 0.040" contype="0" conaffinity="0" group="2"
+              rgba="0.75 0.75 0.78 1" />
+      </body>
+
+      <!-- ===== 指 -x：轴取 -x，所以 qpos 同样是半开度 g ===== -->
+      <body name="rg2_jaw_neg" pos="0 0 0.09">
+        <inertial pos="-0.006 0 0.05" mass="0.02" diaginertia="2e-06 2e-06 4e-06" />
+        <joint name="rg2_jaw_neg_joint" type="slide" axis="-1 0 0"
+               range="0.0005 0.055" damping="8" armature="0.01" />
+        <geom name="rg2_jaw_neg_pad" type="box" pos="-0.00575 0 0.05"
+              size="0.00575 0.010 0.01475" group="3"
+              friction="0.8" solimp="0.95 0.99 0.001" solref="0.004 1"
+              priority="1" rgba="0.9 0.75 0.3 0.45" />
+        <geom name="rg2_jaw_neg_shank" type="box" pos="-0.00575 0 0.085"
+              size="0.00575 0.009 0.026" group="3" rgba="0.8 0.8 0.8 0.15" />
+        <geom name="rg2_jaw_neg_visual" type="box" pos="-0.00575 0 0.075"
+              size="0.0059 0.010 0.040" contype="0" conaffinity="0" group="2"
+              rgba="0.75 0.75 0.78 1" />
+      </body>
+    </body>
+  </body>
+  </body>
+</body>
