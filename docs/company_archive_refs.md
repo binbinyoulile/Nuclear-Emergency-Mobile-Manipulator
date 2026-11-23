@@ -8,7 +8,7 @@
 
 ---
 
-## 一、`D:\Snpsc\国核工作内容\`（30 个编号目录）
+## 一、`D:\Snpsc\国核工作内容\`（27 个编号目录，另有 2 个压缩包）
 
 | 目录 | 内容 | 对我们的用处 |
 | --- | --- | --- |
@@ -32,8 +32,9 @@
    UR 工具法兰、由 URCap 通过 UR 的 IO/RTDE 控制的，**不是我们仿真里那套 CAN**。
    这句话的意义：仿真里 `fingers_actuator` 只是等效执行器，真机接线走 URCap，不能用
    仿真里的执行器参数反推真机电气。
-3. **整车三维装配体**可用于核对本仓库 `zeus_s2_description` 里的安装偏置
-   （臂座、雷达、电池），见 `docs/vehicle_workspace_refs.md` 第三节。
+3. **整车三维装配体**可用于核对厂家工作区里 `zeus_s2_description` 的安装偏置
+   （臂座、雷达、电池），路径 `D:\桌面\机械臂\vehicle_workspace\slam20220903\src\zeus_s2\zeus_s2_description`
+   ——注意这个工作区在**项目上一级目录**，不在本仓库里；详见 `docs/vehicle_workspace_refs.md` 第三节。
 
 ---
 

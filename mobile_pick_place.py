@@ -61,8 +61,8 @@ from mission_core import (  # noqa: E402
 HERE = os.path.dirname(os.path.abspath(__file__))
 IK_SCENE = os.path.join(HERE, "arm_ik_scene.xml")
 # 默认场景必须是**当前实车配置**（UR10 + OnRobot RG2）。这条默认值同时决定单进程入口
-# 和 ROS 侧 mm_sim 加载哪套模型——两边曾经因为这里还指向上电时代的 `dual_car_scene.xml`
-# （UR10e + 2F-85）而不一致：任务层按 RG2 算抓取高度（pinch 离地 16.25 mm），仿真里装的却是
+# 和 ROS 侧 mm_sim 加载哪套模型——两边曾经因为这里还指着旧配置的 `dual_car_scene.xml`
+# （UR10e + 2F-85）而不一致：任务层按 RG2 算抓取高度（pinch 离地 15.5 mm），仿真里装的却是
 # 短 34 mm 的 2F-85，夹爪在杆上方空合（力只有 11 N、杆不动），单进程通过而轨道 B 全挂。
 # 换回旧模型用 `MOBILE_SCENE_PATH=dual_car_scene.xml` 显式指定。
 MOBILE_SCENE = os.environ.get(

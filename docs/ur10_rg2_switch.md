@@ -104,9 +104,9 @@ UR 机械臂的 `<position>` 会自动带 affine，所以这个坑只有手写 `
 
 | 量 | 2F-85 | RG2 | 说明 |
 | --- | --- | --- | --- |
-| pinch 到腕部原点 | 0.2558 m | **0.2900 m** | 工具长 34.2 mm，`TOOL_LENGTH_DELTA` |
+| pinch 到腕部原点 | 0.2558 m | **0.2900 m** | 工具长 34.2 mm |
 | 指垫半高 | 17.75 mm | **14.75 mm** | 决定抓取高度带 |
-| 可行抓取带（pinch 离地） | 17.7~20.7 mm | **14.75~17.75 mm** | `PINCH_ABOVE_FLOOR=0.01625` |
+| 可行抓取带（pinch 离地） | 17.7~20.7 mm | **14.75~17.75 mm** | `PINCH_ABOVE_FLOOR=0.0155`（取带内靠下沿，理由见代码注释） |
 | 执行器 ctrl 语义 | 半开度 m | 半开度 m | `FINGER_OPEN=0.055` / `FINGER_CLOSE=0.0005` |
 | 搬运姿态种子 | — | `CARRY_SEED_Q` | 不指定种子时 IK 落到"腕部转 180°"另一支 |
 
@@ -117,7 +117,7 @@ UR 机械臂的 `<position>` 会自动带 affine，所以这个坑只有手写 `
 1. `dual_car_pick_place.py` 的默认场景 → `dual_car_scene_rg2.xml`（已改）；
 2. `arm_ik_scene.xml` 的 include → `ur10_rg2.xml`（已改）；
 3. `mission_core.py` 的 `FINGER_OPEN/FINGER_CLOSE` → 0.055 / 0.0005（已改）；
-4. `mission_core.py` 的 `PINCH_ABOVE_FLOOR` → 0.01625（已改）；
+4. `mission_core.py` 的 `PINCH_ABOVE_FLOOR` → 0.0155（已改；不要用带中值 0.01625，理由见代码注释）；
 5. `mission_core.py` 的 `GRASP_SPIN_CANDIDATES_DEG` → (0.0, 180.0)（已改，见坑 2）；
 6. `mobile_pick_place.py` 的 `CARRY_Q` 走 `CARRY_SEED_Q` 种子（已改）。
 
@@ -134,10 +134,12 @@ D:\Python313\python.exe scripts\check_rg2_model.py   # 编译 + 质量 + 指面�
 - 夹持自检：稳态力 `40.0 N`、后 1 s 位移 `2.2 mm`、指垫接触 4 点。
 - **21 种子矩阵（轨道 A）：`21/21`**，基线 `reports/baselines/ur10_rg2_0p8_bucket400.csv`。
   - 视觉误差 `0.88 ~ 3.47 mm`；投放 xy `0.7 ~ 4.5 mm`；返航后仍在桶内 `21/21`
-  - 投放后倾角 `76.9 ~ 87.5°`（比 2F-85 那套的 47.7~50.4° 更接近竖直；Ø400 桶口对
-    竖直姿态的可容忍桶心偏差约 110 mm，比横躺 98 mm 更宽）
+  - 投放后姿态：杆与**竖直方向**夹角 `76.9 ~ 87.5°`（`90°` 即完全横躺）。2F-85 那套是
+    `47.0 ~ 50.4°`，反而更接近立着。Ø400 桶口在横躺姿态下可容忍桶心偏差约 `88 mm`，
+    实测质心偏差只有 `0.7 ~ 4.5 mm`，余量充足
   - 全程最小中心距 `0.978 ~ 1.060 m`，接触 0；单次仿真 `120.0 ~ 121.2 s`
-  - 6 路并行跑完约 5 min（串行约 33 min，结果与串行逐位一致）
+  - 3~5 路并行时单种子墙钟 `62 ~ 65 s`，21 个种子约 `6 ~ 10 min`，串行约 `23 min`
+    （`--jobs` 只改墙钟，同种子串行/并行的指标逐位一致）
 - **21 种子矩阵（轨道 B，ROS 2 分布式）：`21/21`**，基线
   `reports/baselines/ros_track_b_ur10_rg2.csv`。视觉 `0.82 ~ 6.01 mm`、投放 xy
   `1 ~ 10 mm`、返航后仍在桶内 `21/21`、接触 0、回起点 CAR1 `0.072 ~ 0.085 m` /

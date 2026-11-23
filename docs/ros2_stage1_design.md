@@ -69,7 +69,7 @@
 
 ### 3.3 机械臂逆解放在驱动侧
 
-任务层现在调 `arm.solve_ik(...)`，背后是 mink + `arm_ik_scene.xml` + UR10e 网格。
+任务层现在调 `arm.solve_ik(...)`，背后是 mink + `arm_ik_scene.xml` + UR10 网格（与 UR10e 共用同一套 Menagerie 网格）。
 如果逆解留在任务侧，`mm_mission` 就要背一份机器人模型与网格资源——两个包各存一份模型必然漂移。
 
 改成服务调用：`/car1/arm/solve_ik`（基座坐标系位姿 → 六个关节角 + 残差）。
@@ -169,7 +169,7 @@ ObstacleSummary.msg  std_msgs/Header header
                      float64 front_min, front_lateral, front_lateral_signed
                      float64 left_min, right_min, rear_min, rear_clear
 
-GripperCommand.msg   float64 position     # 0 全开 … 255 全闭（与 2F-85 寄存器同量纲）
+GripperCommand.msg   float64 position     # 半开度 m（越大越开）：RG2 为 0.0005 全闭 … 0.055 全开
                      float64 max_effort   # N
 
 GripperState.msg     std_msgs/Header header
@@ -224,7 +224,7 @@ Snapshot.srv         string name
 基座系。任务层只在这一个方法上需要翻回来，顺序见 `RosArm.start_fixed`；漏掉不会报错，
 残差仍然只有几毫米，机械臂只是安静地走到关于臂座镜像的位置。
 
-相机是**眼在手上**（装在 UR10e 末端 `wrist_3_link` 上），仿真里直接取世界位姿发布，不在阶段 1 拼六轴链；
+相机是**眼在手上**（装在 UR10 末端 `wrist_3_link` 上），仿真里直接取世界位姿发布，不在阶段 1 拼六轴链；
 真机阶段由 `ur_robot_driver` + `robot_state_publisher` 给出完整链。
 
 ### 5.5 阶段 2 增补（任务层拆分带出来的三个契约）
@@ -274,7 +274,7 @@ Snapshot.srv         string name
 mobile_manipulator/
 ├─ dual_car_pick_place.py          # Windows 单进程入口（保留，行为不变）
 ├─ mobile_pick_place.py            # MuJoCo 底层（保留，行为不变）
-├─ dual_car_scene.xml / models/    # 场景与模型（不变）
+├─ dual_car_scene_rg2.xml / models/  # 场景与模型（当前默认；旧配置是 dual_car_scene.xml）
 ├─ scripts/                        # fetch_models.py / run_matrix.py / compare_metrics.py
 │                                  # + run_ros_matrix.py（新增）
 └─ ros2_ws/src/
@@ -282,8 +282,13 @@ mobile_manipulator/
    ├─ mm_mission/                  # ament_python：状态机、3 个 follower、插值、指标、Ros* 适配器、mission 节点
    ├─ mm_sim/                      # ament_python：CarController、LidarScanner、场景装配、Sim* 适配器、sim_bridge 节点
    ├─ mm_perception/               # ament_python：target_localizer 节点
+   ├── mm_perception/               # ament_python：target_localizer 节点
    └─ mm_bringup/                  # ament_cmake：launch、config、rviz
 ```
+
+> 2026-11-23 增补：`ros2_ws/src` 多了 **`mm_base`**（底盘 CAN 驱动：`0x101–0x104`/`0x601–0x604`、
+> 125 Hz 速度环、四轮差速里程计，见 `docs/can_driver.md`），不属于阶段 1 的三节点骨架；
+> 默认场景也已从 `dual_car_scene.xml`（UR10e + 2F-85）换成 `dual_car_scene_rg2.xml`（UR10 + RG2）。
 
 ### 7.2 两个运行时怎么共用代码
 
@@ -314,7 +319,7 @@ mm_msgs  ◄── mm_sim ──► mm_mission ◄── mm_perception（仅 msg
 | 现有写法 | ROS 2 中对应 |
 |---|---|
 | `io.clock.step()` 推进 `mj_step` | 等下一帧 `/clock`（物理在 sim_bridge 里推进） |
-| `car.set_motion(l, r, s)` 写 ctrl | 发 `/carN/wheel_command` |
+| `car.set_wheels(l, r, s)` 写 ctrl | 发 `/carN/wheel_command` |
 | `car.pose()` 读 `DATA.qpos` | 读缓存的 `/carN/odom` |
 | `car.wheel_speeds()` | 读缓存的 `joint_states.velocity` |
 | `car.lidar.front_min` 等 7 个距离量 + 阻塞标志 | 读缓存的 `obstacle_summary` |
@@ -339,7 +344,7 @@ mm_msgs  ◄── mm_sim ──► mm_mission ◄── mm_perception（仅 msg
 2. `PerceptionInterface` 由 `capture()+detect_target()+object_truth()` 收敛为
    `estimate_target()+object_pose()`（感知拆出去后，任务层不该关心像素，也不该有"真值"这个概念）；
 3. `RobotIO.viewer` 换成每帧渲染回调 `frame_hook`（任务层不认识 viewer 这个 MuJoCo 对象）；
-4. `LidarInterface` 独立成端口（底盘持有它），`ChassisInterface` 补 `set_motion` 默认实现、
+4. `LidarInterface` 独立成端口（底盘持有它），`ChassisInterface` 补 `set_wheels` 抽象方法、
    `left/right/steer_cmd` 输出缓存与 `min_other_separation`。
 
 ---
@@ -350,7 +355,7 @@ mm_msgs  ◄── mm_sim ──► mm_mission ◄── mm_perception（仅 msg
 
 | 轨道 | 命令 | 判据 | 目的 |
 |---|---|---|---|
-| A 单进程（Windows） | `run_matrix.py --seeds 0-20` + `compare_metrics.py` | 21/21 且与 `reports/baselines/stage0_refactor.csv` 逐位一致（1e-9） | 证明本阶段的代码搬动没有改变行为 |
+| A 单进程（Windows） | `run_matrix.py --seeds 0-20` + `compare_metrics.py` | 21/21，且与**当时**的冻结基线 `reports/baselines/stage0_refactor.csv` 逐位一致（1e-9） | 证明本阶段的代码搬动没有改变行为 |
 | B 分布式（Ubuntu） | `ros2 launch mm_bringup sim_mission.launch.py seed:=N` × 21 | 21/21 + 指标在物理带内 | 证明分布式架构可用 |
 
 轨道 A 是每次重构的护栏，轨道 B 是本阶段的交付物。两条都跑，才能区分"拆分错了"和"时序变了"。
@@ -365,8 +370,8 @@ mm_msgs  ◄── mm_sim ──► mm_mission ◄── mm_perception（仅 msg
 | 全程最小中心距 | ≥ 0.82 m |
 | 车车接触数 | 0 |
 | 回起点误差 | < 0.20 m |
-| 帧推进时的指令超时（收尾日志 `指令超时=`） | **仅记录、不判定**（只统计两车都下发过指令之后；启动空转记 `空转帧`）。它量的是"这一帧物理用旧指令推进"的次数，实测 `160~419`（占 4%~11%），随机器负载与并行度变化，见 9.3 |
-| 单次仿真时长 | 仅记录、不判定（真机速度口径后单进程 69.4~70.9 s，ROS 侧更长） |
+| 帧推进时的指令超时（收尾日志 `指令超时=`） | **仅记录、不判定**（只统计两车都下发过指令之后；启动空转记 `空转帧`）。它量的是"这一帧物理用旧指令推进"的次数，当前 RG2 基线实测 `114~953`（占 `6079~6227` 帧的 `2%~15%`），随机器负载与并行度变化，见 9.3 |
+| 单次仿真时长 | 仅记录、不判定（0.8 m/s 速度档：单进程 `120.0~121.2 s`，ROS 侧 `121.3~124.5 s`） |
 
 不做逐位比对：跨进程必然有调度抖动，要求 1e-9 一致是不现实的，也不该成为目标。
 

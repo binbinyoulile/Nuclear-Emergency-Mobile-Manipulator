@@ -20,6 +20,7 @@ mm_sim_bridge ──(状态话题 + /clock + /tf)──▶ mm_mission ──(调
 | `mm_sim` | ament_python | `sim_bridge`：独占 MuJoCo，物理 / 传感器 / `/clock` / 帧同步 |
 | `mm_mission` | ament_python | `mission_node`：任务线程 + 硬件端口适配器；`mode:=mission` 跑仓库根的 `mission_core`，`mode:=smoke` 跑冒烟 |
 | `mm_perception` | ament_python | `target_localizer`：深度图 + TF → **粗端中心**世界坐标；`lidar_summary`：点云 → 雷达摘要（真车避障链，见下） |
+| `mm_base` | ament_python | **底盘 CAN 驱动**：SocketCAN + 厂家 `0x101–0x104`/`0x601–0x604` 协议、125 Hz 速度环、四轮差速里程计；`backend:=loopback` 可在无硬件时自检，见 [`../docs/can_driver.md`](../docs/can_driver.md) |
 | `mm_bringup` | ament_cmake | launch 文件 |
 
 依赖方向：`mm_sim` 与 `mm_mission` **互不 import**，只共享 `mm_msgs` 的消息契约。
@@ -45,7 +46,7 @@ source install/setup.bash
 ```
 
 `--symlink-install` 是必须的：launch 文件靠自身真实路径反推仓库根，用来定位
-`dual_car_scene.xml` 与 `models/`；`mm_mission` 也靠同样方式找到仓库根的
+`dual_car_scene_rg2.xml`（默认场景）与 `models/`；`mm_mission` 也靠同样方式找到仓库根的
 `mission_core.py`。脱离源码树安装时改为显式传参 `repo_root:=<仓库根>`，
 并给任务节点设环境变量 `MM_REPO_ROOT=<仓库根>`（launch 文件已自动传）。
 `mm_mission` 会 import 仓库根的 `mission_core`，因此系统 python3 里需要 `numpy` 与
@@ -146,17 +147,20 @@ ros2 launch mm_bringup sim_mission.launch.py seed:=0 lidar_summary:=true
   **两项都做过 FAIL→OK 的反向验证**（第 3 项去掉 `.T`、第 4 项把姿态换成默认值），
   不是写完就摆在那里的死代码。
 - **工具姿态必须随请求走**：`SolveIK.srv` 的 `orientation` 是固定基座系四元数，由
-  `RosArm.start_world`/`solve_ik` 原样透传。抓取要求工具绕自身 Z 轴转 ±90° 才能横跨
-  杆身，退回 0° 时夹爪照常闭合、力也有读数（0.95~1.62 N，比空夹的 0.2~0.6 N 还高），
-  但杆一根都不会被拿起来，任务卡在 `4_grasp`。**最早的判据是
-  `finger force after close`：真正夹住约 5 N，夹空是 1 N 量级。**
+  `RosArm.start_world`/`solve_ik` 原样透传。抓取要求工具绕自身 Z 轴转到两指横跨杆身
+  （RG2 的开合轴在站点 `+x`，用 `0°/180°`；2F-85 在 `+y`，用 `±90°`）。角度用错时夹爪
+  照常闭合、力也有读数（0.95~1.62 N，比空夹的 0.2~0.6 N 还高），但杆一根都不会被拿起来，
+  任务卡在 `4_grasp`。**最早的判据是 `finger force after close`：真正夹住约 5 N，
+  夹空是 1 N 量级。**
 - **超时参数是环境宽容度，不是判据**：`frame_timeout` 5→15 s、`ready_timeout` 30→60 s。
   实测同一台虚拟机出现过 2~6 倍降速（场景导入 3 s→31 s、控制帧 30 ms→88 ms），5 s 的帧超时
   会把**正常运行**判成失败；放宽后真故障照样超时（桥真死了 15 s 必然没有 `/clock`），
   而任务成功率、物理判据带一个字都没动。调这个参数不影响任何验收结论。
-- **验证状态**：任务层拆分后单进程轨道 A 复跑 `seed 0-20`，与重构前基线逐位一致；
-  ROS 轨道 B（21 种子，`e09370d`）Ubuntu 上 **21/21**（并行度 4、每种子独立 `ROS_DOMAIN_ID`，
-  墙钟 23.5 min），口内余量 19~61 mm、杆顶 ≤0.628 m、视觉 0.93~6.34 mm、车车接触 0。
+- **验证状态**：换 UR10 + OnRobot RG2 后两轨都重跑并冻结——轨道 A `seed 0-20` **21/21**
+  （`reports/baselines/ur10_rg2_0p8_bucket400.csv`，视觉 `0.88~3.47 mm`），轨道 B **21/21**
+  （`reports/baselines/ros_track_b_ur10_rg2.csv`，视觉 `0.82~6.01 mm`、投放 xy `1~10 mm`、
+  并行 4 路墙钟 `28.9 min`）。早期在 `e09370d` 上的 B 轨结果（21/21、墙钟 23.5 min、
+  口内余量 19~61 mm）属 2F-85 时代，只作历史参考、不与新数据混比。
   首次运行暴露的 TF 父帧、`start_fixed` 坐标系、工具姿态丢失三处错误已修。
 
 `mode:=smoke` 保留为链路冒烟，判据（离线用单进程后端跑过 seed 2/4/6/7/14，Ubuntu 端

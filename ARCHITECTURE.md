@@ -12,10 +12,10 @@
 
 **最终目标**：基于多模态感知（雷达 + 深度相机）的核电应急机器人运动控制 Sim2Real 闭环验证。
 
-**当前边界（`master`；冻结基线是 tag `v1.0.0`，之后被操作对象换成不锈钢监测棒、屏蔽桶换成 Ø400 圆筒）**：
+**当前边界（`master`；冻结基线是 tag `v1.0.0`，之后被操作对象换成不锈钢监测棒、屏蔽桶换成 Ø400 圆筒、机械臂换成实车配置 UR10 + OnRobot RG2）**：
 
-- 已实现：双车协同全流程仿真（雷达避障 → 视觉识别 → 侧面抓取 → 动态停靠 → 协同投放 → 倒车脱离 → 精准返航），75 kg 真实参数重载底盘，21 个随机种子的可回归验收；阶段 1 的三节点 ROS 2 骨架（`ros2_ws`）已在 Ubuntu 22.04 + 原生 Humble 上 `colcon build` 通过；阶段 2 把任务层拆到零 MuJoCo 的 `mission_core.py`，单进程与 ROS 2 共用同一份实现，端口扩到 `Lidar / object_pose / tool_position`，轨道 B（ROS 侧 21 个种子）同样 21/21，并由 `scripts/run_ros_matrix.py` 脚本化（并行 4 路、墙钟 30.6 min）；真车避障链缺的"点云 → 雷达摘要"节点已在 `mm_perception/lidar_summary` 补齐，并与桥逐帧对照（950 帧、7 项距离量最大偏差 `9.1e-8 m`）。
-- 未实现：真机 CAN 驱动（**报文格式已从厂家源码查实，见 `docs/vehicle_workspace_refs.md`，不再是卡点**，缺的只是上车）、手眼标定、实车参数辨识。软件侧能做的已做完：`scripts/bench_chassis.py`（架空/落地台架标定）、`docs/real_machine_calibration.md`（公差表：轮径 0.5%、相机 2 mm/0.1°、雷达 5 cm）、`mm_perception/lidar_summary`（点云→雷达摘要，与桥对照 950 帧、9.1e-8 m）。明确不做：bag 回放（只覆盖感知决策段——不录服务、不含物理结局）。待上车实测：摘要节点的安装高度与自身盲区、轮径真值、相机手眼、转矩指令的单位（源码只给了 ±1910 的钳位）。
+- 已实现：双车协同全流程仿真（雷达避障 → 视觉识别 → 侧面抓取 → 动态停靠 → 协同投放 → 倒车脱离 → 精准返航），75 kg 真实参数重载底盘，21 个随机种子的可回归验收；阶段 1 的三节点 ROS 2 骨架（`ros2_ws`）已在 Ubuntu 22.04 + 原生 Humble 上 `colcon build` 通过；阶段 2 把任务层拆到零 MuJoCo 的 `mission_core.py`，单进程与 ROS 2 共用同一份实现，端口扩到 `Lidar / object_pose / tool_position`，轨道 B（ROS 侧 21 个种子）同样 21/21，并由 `scripts/run_ros_matrix.py` 脚本化（并行 4 路、墙钟 28.9 min，换 UR10 + RG2 后重跑）；真车避障链缺的"点云 → 雷达摘要"节点已在 `mm_perception/lidar_summary` 补齐，并与桥逐帧对照（950 帧、7 项距离量最大偏差 `9.1e-8 m`）。
+- 未实现：**实车接入**——底盘 CAN 驱动 `mm_base` 已经写好（厂家 `0x101–0x104`/`0x601–0x604` 协议、125 Hz 速度环、四轮差速里程计，Ubuntu 上过了 112 条自检与 loopback 端到端，见 `docs/can_driver.md`），但**没接过真车**；手眼标定、实车参数辨识同样待上车。软件侧能做的已做完：`scripts/bench_chassis.py`（架空/落地台架标定）、`docs/real_machine_calibration.md`（公差表：轮径 0.5%、相机 2 mm/0.1°、雷达 5 cm）、`mm_perception/lidar_summary`（点云→雷达摘要，与桥对照 950 帧、9.1e-8 m）。明确不做：bag 回放（只覆盖感知决策段——不录服务、不含物理结局）。待上车实测：摘要节点的安装高度与自身盲区、轮径真值、相机手眼、转矩指令的单位（源码只给了 ±1910 的钳位）。
 
 ## 3. 跨端协作环境
 
@@ -40,11 +40,12 @@ mobile_manipulator/
 ├─ dual_car_pick_place.py   # 单进程入口：Sim* 适配器、场景初始化、深度视觉、雷达点云叠加、截图与指标
 ├─ mobile_pick_place.py     # MuJoCo 底层：MJCF 加载、mink IK、重力补偿、ArmMotion/FingerMotion、Simulation
 ├─ robot_interface.py       # 抽象层：Clock / Lidar / Chassis / Arm / Gripper / Perception / RobotIO（不含 MuJoCo）
-├─ dual_car_scene.xml       # 主场景（30×30 m、红线、绿框、两车装配）
+├─ dual_car_scene_rg2.xml  # 主场景（默认，UR10 + RG2）：30×30 m、红线、绿框、两车装配
+├─ dual_car_scene.xml       # 旧配置场景（UR10e + 2F-85，保留备查）
 ├─ arm_ik_scene.xml         # 固定基座 IK 场景
-├─ models/                  # UR10e 复合模型 + 监测棒网格（chopstick.obj 入库，Menagerie 的 assets 由脚本下载）
-├─ scripts/                 # fetch_models.py / run_matrix.py / compare_metrics.py / check_ports.py
-├─ ros2_ws/src/             # ROS 2 五包：mm_msgs / mm_sim / mm_mission / mm_perception / mm_bringup（Humble 构建通过）
+├─ models/                  # 自建整车装配 + UR10 + RG2 模型 + 监测棒网格（Menagerie 的 assets 由脚本下载）
+├─ scripts/                 # fetch_models.py / run_matrix.py / compare_metrics.py / check_ports.py 等
+├─ ros2_ws/src/             # ROS 2 六包：mm_msgs / mm_sim / mm_mission / mm_perception / mm_base / mm_bringup（Humble 构建通过）
 ├─ docs/screenshots/        # README 配图
 └─ reports/                 # regression.csv + baselines/（入库）、logs/（本地忽略）
 ```
@@ -68,7 +69,7 @@ mobile_manipulator/
 | 底盘 | `CarController`（实现 `ChassisInterface`） | 四轮轮速 + 前轮转角下发、世界位姿/速度回读、接触统计、雷达扫描 | base |
 | 感知 | `get_camera_data / depth_to_world / detect_steel_target / process_camera_frame` | D435i 深度视觉四层：取图 → 反投影点云 → 地平面拟合与离地分割 → PCA 定轴、凭两端高差判粗端 | mujoco.Renderer |
 | 机械臂 | `ArmMotion`（经 `SimArm` 暴露） | 关节目标下发 + 平滑插值 + 重力补偿；IK 用 mink 且以当前关节角为种子 | mink |
-| 夹爪 | `FingerMotion`（经 `SimGripper` 暴露） | 单执行器开合插值（0 开 / 255 闭） | base |
+| 夹爪 | `FingerMotion`（经 `SimGripper` 暴露） | 单执行器 + equality 耦合对指，开合插值用**米**（半开度：RG2 为 0.0005 全闭 ~ 0.055 全开） | base |
 | 入口 | `main()` / `initialize_mission()` | 参数解析（`--seed/--headless/--snapshot/--backend`）、场景与目标随机化、viewer | 全部 |
 | ROS 适配 | `mm_mission.adapters.Ros*` | 把端口翻译成话题/服务/TF；`RosClock.step()` 等 `/clock` 并补发两车轮速指令 | robot_interface |
 
@@ -78,7 +79,7 @@ mobile_manipulator/
 
 ```
 阶段1 起点
-  └─阶段2 CAR1 雷达避障 → 观察点(Y≈18.4) 粗定位
+  └─阶段2 CAR1 雷达避障 → 观察点(Y≈18.5) 粗定位
       └─阶段3 D435i 精定位：先开到 1.41 m 测量位再采一帧 → 通知 CAR2 出发 → CAR1 逼近目标正南 0.85 m
           └─阶段4 CAR1 侧向抓取（接近/下探/闭合/提升/收回），CAR2 并行动态停靠
               └─阶段5 停靠检查（车身投影在绿框外、中心距 ≥ 0.82 m）
@@ -136,11 +137,11 @@ DualCarMission.metrics（逐阶段 dict）
 | 横摆角速度上限 | 1.5 rad/s | 超过会把重载车甩飞 |
 | 二号车停靠中心 Y | 20.06 m（绿框下边界 -0.64） | 车身任意朝向投影 ≤0.578 m，留 0.06 m 余量 |
 | 抓取前摆正阈值 | 12° | 补 3° 的原地转要滑 14 mm，代价大于收益 |
-| 目标区 / 放射源散布 | 0.70×0.60 m；杆原点 X −0.269~+0.100、Y 20.78–21.22 | UR10e 臂展 1.3 m，抓取点 0.94 m（72%）；区间按 202 mm 杆的两端半长从搜索窗内缩，保证整根杆不出界 |
+| 目标区 / 放射源散布 | 0.70×0.60 m；杆原点 X −0.269~+0.100、Y 20.78–21.22 | UR10 臂展 1.3 m，抓取点 0.94 m（72%）；区间按 202 mm 杆的两端半长从搜索窗内缩，保证整根杆不出界 |
 | 监测棒 | Ø6×33 + Ø5×169，总长 0.202 m，33.5 g，质心距 body 原点 79 mm | 质心偏移由模型惯性参数读出，投放按质心对准桶心 |
 | 屏蔽桶 | 内径 Ø400、内深 240（外高 260）、底厚 20 mm | 桶口必须远大于杆长与真机定位误差：Ø240 只容忍 18 mm，Ø400 约 98 mm |
 | 投放松爪高度 | 桶口上方 0.06 m | 杆整根自由落体到底，不碰桶沿 |
-| 落桶判据 | 整根杆在桶口投影内（端点离内壁 ≥ 3 mm）、低于桶沿、高于桶底 | 杆横躺时质心只能偏十几毫米、立着时能偏 100 mm，同一质心容差对两种姿态自相矛盾；质心偏移仍记录，作横向精度参考 |
+| 落桶判据 | 整根杆在桶口投影内（端点离内壁 ≥ 3 mm）、低于桶沿、高于桶底 | 杆横躺时质心只能偏几十毫米、立着时能偏一百多毫米，同一质心容差对两种姿态自相矛盾；质心偏移仍记录，作横向精度参考 |
 
 ## 9. 回归与验收
 
@@ -153,10 +154,10 @@ DualCarMission.metrics（逐阶段 dict）
 | 限制 | 现状 | 迁移动作 |
 |---|---|---|
 | 前轮转向节是等效机构 | 控制器用"转角 + 轮速差"，非纯差速 | 重写横摆控制并重新标定 |
-| 雷达检测 2.8 m < 制动 3.5 m | 已按 2.0 m/s 巡航把制动距离压到约 1.5 m | 真机换轮胎/载荷后复核 |
+| 雷达 2.8 m 与 0.8 m/s 巡航匹配 | 制动距离约 0.21 m，留十倍余量；更高车速档或更大负载需重算 | 真机换轮胎/载荷后复核，并按实测车速重新定 `LIDAR_DETECT_RANGE` |
 | 摩擦/静摩擦门限为仿真整定值 | 未做真机辨识 | 直线/原地转/坡道三组试验回填 |
 | 视觉是渲染深度图 + 地平面拟合 | 用反投影深度做离地分割，无真机标定与去噪 | 换相机驱动 + 手眼标定 + 深度尺度标定 |
-| ROS 侧姿态参数未接通 | 逆解服务固定竖直下压姿态，工具朝向由 `TARGET_QUAT` 决定 | 真机接 servoj 时把姿态并入 SolveIK 请求 |
+| 实车质心未进模型 | 缺约 25 kg 控制箱位置与臂座前移量，仿真仍是"臂在车体中心正上方" | 拿到尺寸后一起改质量/臂座坐标，并重跑两轨 21 种子 |
 
 ## 11. 变更记录
 

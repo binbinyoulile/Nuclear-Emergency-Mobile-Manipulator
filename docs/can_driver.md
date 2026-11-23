@@ -9,8 +9,9 @@
 - 指令分解用 **0.61 m** 轮距，里程计用 **1.35 m** 轮距；两者不是同一个量，理由见第五节。
 - 启动顺序固定为 **清报警 → 使能 ×4 → 转速模式 ×4 → 零速**；使能/模式应答超时会报错退出，
   不会带着未知驱动器状态开始发速度。
-- **未在真机和 ROS2 环境验证**：本机 Windows 只有 Python，没有 rclpy、没有 CAN 设备。
-  `base_node.py` 只做了语法检查；SocketCAN、驱动器应答、速度单位、编码器符号都要上车确认。
+- **ROS 2 侧已在 Ubuntu 22.04 + Humble 实测**（构建、`ros2 run mm_base selftest` 112 条断言、
+  loopback 节点启动与 `/cmd_vel → /odom` 端到端，见第八节）；**真机侧未验证**——没上过车，
+  SocketCAN、驱动器应答、速度给定单位、编码器符号都要上车确认。
 - **任务书 D 第 5 条与 C 的 1.35 m 口径在数学上冲突**：按 0.61 分解、1.35 折航向，
   原地转 1.0 rad/s 的里程计偏航是 `0.61/1.35 ≈ 0.452 rad`，不是 1.0 rad。
   自检按 1.35 断言 0.452，并另测 0.61 口径得到 1.0，详见第七节。
@@ -294,7 +295,7 @@ Ctrl-C → 节点发四轮失能 → 关闭 CAN → 进程退出。确认日志�
 Windows、无 ROS2、无 CAN 硬件，一条命令：
 
 ```powershell
-D:\Python313\python.exe "D:\桌面\机械臂\mobile_manipulator\.dsh-worktrees\can\ros2_ws\src\mm_base\mm_base\selftest.py"
+D:\Python313\python.exe D:\robot_mobile\ros2_ws\src\mm_base\mm_base\selftest.py
 ```
 
 也可以在 `ros2_ws/src/mm_base` 目录下用 `D:\Python313\python.exe -m mm_base.selftest`。
