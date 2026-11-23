@@ -3,7 +3,7 @@
 文件目的：
     把「七阶段任务状态机 + 三个路径控制器 + 抓取/投放编排」收敛成**唯一一份**实现，
     单进程仿真入口（`dual_car_pick_place.py`）与 ROS 2 任务节点
-    （`ros2_ws/src/mm_mission/mm_mission/mission.py`）共用，避免两份任务逻辑漂移。
+    （`ros2_ws/src/mm_mission/mm_mission/node.py`）共用，避免两份任务逻辑漂移。
 
 依赖与版本：
     只用 numpy、scipy.spatial.transform 和 `robot_interface`；不 import mujoco，
@@ -23,8 +23,8 @@
     目标区内的物体位置由近距视觉给出（0.83~2.66 mm 量级）。
 
 已知限制：
-    规则控制、理想传感器；雷达检测距离 2.8 m 小于 6.5 m/s 的制动距离 3.5 m，
-    真机接入前必须做"速度—检测距离"联合标定。
+    规则控制、理想传感器；雷达 2.8 m 警戒距离是按 0.8 m/s 巡航定的（制动距离约
+    0.21 m），换更大负载或更高车速档时必须重新做"速度—检测距离"联合标定。
 
 重要性等级：A"""
 
@@ -44,7 +44,7 @@ from robot_interface import (
 
 # ---------------------------------------------------------------------------
 # 底盘几何与控制参数。
-# 由 task 层统一持有：仿真场景（dual_mobile_ur10e.xml）、MuJoCo 单进程入口与 ROS 2
+# 由 task 层统一持有：仿真场景（`dual_car_scene_rg2.xml`）、MuJoCo 单进程入口与 ROS 2
 # 任务节点必须用同一套数值，否则控制器对车体尺寸的理解和物理模型不一致。
 # ---------------------------------------------------------------------------
 WHEEL_RADIUS = 0.1525
@@ -106,26 +106,22 @@ SKID_TURN_SPINDOWN_TIME = 0.35
 # 机械臂与夹爪：姿态、站点高度与动作时长。
 # ---------------------------------------------------------------------------
 GROUND_Z = 0.0
-# 夹爪几何（OnRobot RG2，以 pinch 站点为原点，竖直方向）：两指垫各半高 14.75 mm、中心与
-# pinch 同高（`scripts/check_rg2_model.py` 实测 dz=0），所以夹持面覆盖 pinch 上下各
-# 14.75 mm。由此推出"自上而下夹一根平躺圆棒"的可行带：pinch 必须落在离地 14.75~17.75 mm
-# 之间——低了指垫底面压进地面，高了夹持面盖不到棒身最宽处（Ø6 杆中心离地 3 mm）。
-# 取中间值，闭合后指垫底面离地约 1.5 mm。
-# 换成 2F-85 旧模型时这条带是 17.7~20.7 mm，两指垫比 RG2 长 3 mm。
-# 换成型材 RG2 后这条带是 14.75~17.75 mm。取**靠下沿**的 0.0155 而不是中值：指垫下沿离地
-# 只有 0.75 mm，但两指能把整根棒身（中心离地 3 mm、最高点 6 mm）完整裹住，允许 ±5 mm 的
-# 定位误差；取中值 0.01625 时指垫下沿离地 1.5 mm，指垫底缘只比杆顶低 0.75 mm，实测
-# ROS 侧只要高 3 mm 就变成"指垫坐在杆顶上"，夹爪闭合夹住却抬不起来。
+# 夹爪几何（OnRobot RG2，以 pinch 站点为原点）：两指垫各半高 14.75 mm、中心与 pinch
+# 同高（`scripts/check_rg2_model.py` 实测 dz=0），所以夹持面覆盖 pinch 上下各 14.75 mm。
+# 由此推出"自上而下夹一根平躺圆棒"的可行带：pinch 离地 14.75~17.75 mm——低了指垫底面
+# 压进地面，高了夹持面盖不到棒身最宽处（Ø6 杆中心离地 3 mm）。2F-85 旧模型的指垫长
+# 3 mm，那条带是 17.7~20.7 mm。
+# 取带内靠下沿的 0.0155 而不是中值 0.01625：两指仍能把整根棒身（中心离地 3 mm、最高点
+# 6 mm）完整裹住，允许 ±5 mm 定位误差；取中值时指垫底缘只比杆顶低 0.75 mm，ROS 侧实测
+# 只要高 3 mm 就变成"指垫坐在杆顶上"，夹爪闭合了却抬不起来。
 PINCH_ABOVE_FLOOR = 0.0155
 GRASP_WORLD_Z = GROUND_Z + PINCH_ABOVE_FLOOR
 APPROACH_WORLD_Z = GRASP_WORLD_Z + 0.17
 LIFT_WORLD_Z = GRASP_WORLD_Z + 0.30
-# 工具长度差：2F-85 的 pinch 在腕部原点外 0.2558 m，OnRobot RG2 是 0.2900 m（长 34.2 mm）。
-# 换工具后搬运姿态**不需要**补偿抓取点高度：pinch 保持 0.45 m 时，RG2 的腕部自然比原来高
-# 34 mm，离底盘甲板更远，反而更安全。真正要处理的是 IK 分支——不指定种子时，更长的工具会
-# 把解推到"腕部转 180°"的另一支上（实测 joint1 从 −4.07 变成 +0.95），腕部相机跟着转走，
-# 观测位连杆都拍不到。所以搬运姿态固定用基线种子 CARRY_SEED_Q 求解。
-TOOL_LENGTH_DELTA = 0.0342
+# 工具长度：RG2 的 pinch 在腕部原点外 0.2900 m，2F-85 旧模型是 0.2558 m（短 34.2 mm）。
+# 抓取点高度保持 0.45 m 不做补偿：换长工具后腕部自然高出 34 mm，离底盘甲板更远。真正
+# 要处理的是 IK 分支——不给种子时，更长的工具会把解推到"腕部转 180°"的另一支上（实测
+# joint1 从 −4.07 变成 +0.95），腕部相机跟着转走，观测位连杆都拍不到。
 # 搬运姿态，位于底盘轮廓内；**固定基座坐标系**（arm_ik_scene.xml 的 base 体）。
 CARRY_FIXED = np.array([0.20, 0.0, 0.45])
 # 2F-85 时代的搬运姿态解，作为 RG2 的 IK 种子，保证落在同一支上（见上面的说明）。
@@ -159,7 +155,7 @@ CARRY_TIME = 2.8
 # ---------------------------------------------------------------------------
 # 任务几何布局
 # ---------------------------------------------------------------------------
-# 目标区按 UR10e 工作空间收紧：车停在 (x, y-0.85)，抓取点只有 0.94 m 远
+# 目标区按 UR10 工作空间收紧：车停在 (x, y-0.85)，抓取点只有 0.94 m 远
 # （水平 0.85 + 垂直 0.39，臂展 1.3 m，约 72%），横向摆动也从 ±0.70 收到 ±0.28。
 TARGET_ZONE_X_MIN = -0.35
 TARGET_ZONE_X_MAX = 0.35
@@ -248,9 +244,10 @@ MEASURE_STANDOFF_Y = 1.41
 # 射线数量、俯仰分辨率等纯建模参数留在后端（本层不需要）。
 # ---------------------------------------------------------------------------
 LIDAR_PERIOD = 0.10
-# ponytail: 6.5 m/s 的制动距离约 3.5 m，比这个 2.8 m 的警戒距离还长，绕行余量很小；
-# 调大检测距离会让长距离返航提前偏航（实测有 seed 跑到 y=28），需要先做
-# "速度—检测距离"联合标定，因此这里暂不单独修改。
+# 2.8 m 是按 0.8 m/s 巡航定的：制动距离约 0.21 m，留十倍余量。早期 6.5 m/s 时代这个
+# 距离比制动距离还短，才需要"速度—检测距离"联合标定；现在换更大负载或更高车速档时仍要
+# 重新算一遍。注意调大检测距离会让长距离返航提前偏航（实测有 seed 绕到 y=28），动之前
+# 先看返航段。
 LIDAR_DETECT_RANGE = 2.8
 LIDAR_FRONT_HALF = np.deg2rad(30.0)
 # 绕行方向记忆：同一障碍的反复重入不再重新选边。ROS 侧二号车卡死时日志里
@@ -456,7 +453,7 @@ class PathFollower:
             if self.index == len(self.path) - 1:
                 self.done = True
                 self.speed_cmd = 0.0
-                car.set_motion(0.0, 0.0, 0.0)
+                car.set_wheels(0.0, 0.0, 0.0)
                 print(
                     f"  [{car.name}] path complete at "
                     f"({pos[0]:.3f}, {pos[1]:.3f})"
@@ -627,7 +624,7 @@ class PathFollower:
         car.left_cmd += COMMAND_RAMP * (left_target - car.left_cmd)
         car.right_cmd += COMMAND_RAMP * (right_target - car.right_cmd)
         car.steer_cmd += COMMAND_RAMP * (steer_target - car.steer_cmd)
-        car.set_motion(car.left_cmd, car.right_cmd, car.steer_cmd)
+        car.set_wheels(car.left_cmd, car.right_cmd, car.steer_cmd)
         # 卡死告警：距航点还很远却没有前进速度，超过 STALL_WARN_TIME 打一行，
         # 不用等 waypoint 超时才在错误信息里看到。
         stuck = (
@@ -740,7 +737,7 @@ class SkidTurnFollower:
             if self._cmd_mag <= 0.0 or self.ramp_time <= 0.0:
                 # 从来没转过（到点已在容差内）或不开斜坡：直接结束，不动车。
                 self.done = True
-                car.set_motion(0.0, 0.0, 0.0)
+                car.set_wheels(0.0, 0.0, 0.0)
                 print(
                     f"  [{car.name}] heading aligned at yaw={yaw:.3f} rad, "
                     f"pose=({pos[0]:.3f}, {pos[1]:.3f})"
@@ -756,10 +753,10 @@ class SkidTurnFollower:
             frac = (self.clock.now - self._spindown_t0) / self.ramp_time
             if frac >= 1.0:
                 self.done = True
-                car.set_motion(0.0, 0.0, 0.0)
+                car.set_wheels(0.0, 0.0, 0.0)
                 return True
             speed = self._cmd_mag * max(0.0, 1.0 - frac)
-            car.set_motion(
+            car.set_wheels(
                 speed * self._spin_dir, -speed * self._spin_dir, 0.0
             )
             return False
@@ -787,7 +784,7 @@ class SkidTurnFollower:
                 + "]"
             )
         # 纯差速原地转：前轮不再转向。实测给前轮 -0.65 rad 反而削弱偏航（1.32 → 0.82 rad/s）。
-        car.set_motion(
+        car.set_wheels(
             self._cmd_mag * direction,
             -self._cmd_mag * direction,
             0.0,
@@ -848,7 +845,7 @@ class ReverseStraightFollower:
         pos, yaw = car.pose()
         if pos[1] <= self.target_y + 0.08:
             self.done = True
-            car.set_motion(0.0, 0.0, 0.0)
+            car.set_wheels(0.0, 0.0, 0.0)
             print(
                 f"  [{car.name}] reverse complete at "
                 f"({pos[0]:.3f}, {pos[1]:.3f})"
@@ -891,7 +888,7 @@ class ReverseStraightFollower:
         car.left_cmd += COMMAND_RAMP * (wheel - car.left_cmd)
         car.right_cmd += COMMAND_RAMP * (wheel - car.right_cmd)
         car.steer_cmd += COMMAND_RAMP * (steer_target - car.steer_cmd)
-        car.set_motion(car.left_cmd, car.right_cmd, car.steer_cmd)
+        car.set_wheels(car.left_cmd, car.right_cmd, car.steer_cmd)
         if _TRACE and self.clock.now - getattr(car, "_rev_trace", 0.0) >= 0.5:
             car._rev_trace = self.clock.now
             print(
@@ -918,7 +915,7 @@ def stop_and_settle(io: RobotIO, car: ChassisInterface) -> None:
     car.left_cmd = 0.0
     car.right_cmd = 0.0
     car.steer_cmd = 0.0
-    car.set_motion(0.0, 0.0, 0.0)
+    car.set_wheels(0.0, 0.0, 0.0)
     steps = max(1, int(round(CHASSIS_SETTLE_TIME / io.clock.dt)))
     for _ in range(steps):
         io.arm.hold()
@@ -1027,7 +1024,7 @@ def run_two_straight_reverses(
         for index, follower in enumerate(followers):
             if index > 0 and io.clock.now < lead_until:
                 # 明确保持静止，不让残留指令把车往前带。
-                follower.car.set_motion(0.0, 0.0, 0.0)
+                follower.car.set_wheels(0.0, 0.0, 0.0)
                 continue
             if not follower.done:
                 follower.update(cars)

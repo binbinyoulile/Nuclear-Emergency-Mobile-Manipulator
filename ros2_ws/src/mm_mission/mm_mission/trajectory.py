@@ -39,7 +39,7 @@ class JointTrajectory:
 
 
 class ScalarTrajectory:
-    """夹爪开合的单标量定时插值（量纲 0…255）。"""
+    """单标量定时插值（夹爪开合值，单位随调用方：当前是半开度米）。"""
 
     def __init__(self, start: float, target: float, duration: float) -> None:
         self.start = float(start)

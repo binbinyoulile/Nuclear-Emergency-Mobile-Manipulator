@@ -118,10 +118,6 @@ class ChassisInterface(ABC):
     def contacts_with(self, other: "ChassisInterface") -> int:
         """与另一台底盘之间的物理接触对数量（安全判据用）。"""
 
-    def set_motion(self, left: float, right: float, steer: float) -> None:
-        """`set_wheels` 的历史命名，任务层的控制器沿用它。"""
-        self.set_wheels(left, right, steer)
-
 
 class ArmInterface(ABC):
     """六自由度机械臂的读写接口。
@@ -191,8 +187,11 @@ class GripperInterface(ABC):
     """二指夹爪接口。
 
     约定：
-        开合值 0…255（0 = 全开，255 = 全闭），与 Robotiq 2F-85 的寄存器量纲一致，
-        真机实现可直接透传，不需要在任务层做映射。
+        开合值是**半开度**，单位 m：恒为正数，越大张得越开。数值由任务层按夹爪型号
+        给（`mission_core.FINGER_OPEN` / `FINGER_CLOSE`），当前实车 OnRobot RG2 是
+        0.055 全开（指面间隙 110 mm）、0.0005 全闭（间隙 1 mm）。换夹爪只改任务层
+        这两个常数；后端负责把它换算成该夹爪自己的指令（RG2 是"宽度 + 力"）。
+        早期 2F-85 时代这一层用 0…255 的寄存器量纲，已废弃。
     """
 
     @abstractmethod

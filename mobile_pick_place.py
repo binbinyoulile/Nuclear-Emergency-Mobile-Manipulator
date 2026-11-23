@@ -1,18 +1,22 @@
-"""UR10e 单臂移动操作臂规则控制仿真。
+"""MuJoCo 后端：场景加载、IK 求解、臂/夹爪运动原语，以及文件末尾的单臂演示。
 
 文件目的：
-    在 MuJoCo 中演示四轮底盘移动到目标、UR10e 抓取平躺圆柱并将物体放入屏蔽桶。
+    双车任务入口（`dual_car_pick_place.py`）与本模块共用**同一个** MJCF 模型：本模块
+    导入即按 `MOBILE_SCENE_PATH` 加载场景（默认 `dual_car_scene_rg2.xml`，UR10 + RG2），
+    并提供 IK 求解（mink）、重力补偿控制、臂/夹爪的定时插值等原语。
 整体输入输出：
     输入为 MJCF 场景、任务常量与可选 headless 参数；输出为仿真状态、终端日志和布尔成功结果。
 依赖与版本：
     Python 3.10+、mujoco、mink、numpy、scipy；quadprog 可选，缺失时自动回退 daqp。
 运行方式：
-    D:/Python313/python.exe mobile_pick_place.py
-    D:/Python313/python.exe mobile_pick_place.py --headless
+    D:/Python313/python.exe dual_car_pick_place.py     # 双车任务（常用入口）
+    D:/Python313/python.exe mobile_pick_place.py --headless   # 单臂演示（见下）
 关键假设：
     模型名、关节名和夹爪执行器名与仓库内 XML 一致；场景资产已由 scripts/fetch_models.py 下载。
 已知限制：
-    使用简化环境与规则控制，不包含真实通信延迟、传感器噪声或在线碰撞规划。
+    单臂演示（本文件 `main()`）的航点按旧的单臂场地写死（物体在 (6, 0)），与双车场景的
+    目标区（Y≈20.7~21.3）不重合，它只用于验证后端原语；正式任务走 `dual_car_pick_place.py`。
+    模型使用简化环境与规则控制，不含通信延迟、传感器噪声或在线碰撞规划。
 重要性等级：A"""
 
 from __future__ import annotations
@@ -114,20 +118,17 @@ RELEASE_SETTLE_TIME = 0.8
 RETRACT_TIME = 2.0
 FINAL_SETTLE_TIME = 2.0
 
-# 底盘 P 控制器（几何与 dual_mobile_ur10e.xml 一致：轮距 0.555 m、轴距 0.50 m）
+# 底盘 P 控制器（几何与当前场景一致：轮距 0.555 m、轴距 0.50 m）
 K_POS = 1.20
 V_MAX = 0.80
 W_MAX = 1.00
 POS_TOL = 0.03
 COMMAND_RAMP = 0.12
-YAW_TOL = 0.03
 MAX_DRIVE_TIME = 40.0
 
 # 仿真与渲染
 STEPS_PER_FRAME = 20
 IK_TOL = 0.003
-LIFT_TOL = 0.05
-CONTACT_FORCE_TOL = 0.5
 BUCKET_XY_TOL = 0.05
 BUCKET_Z_MAX = 0.15
 

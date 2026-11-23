@@ -205,9 +205,11 @@ class RosArm(ArmInterface):
     def start_world(self, target_pos_world, duration, target_quat=None) -> None:
         """世界坐标目标位置 → 逆解服务；工具姿态原样随请求下发。
 
-        ``target_quat`` 是固定基座坐标系（wxyz）。**不能丢**：抓取要求工具绕自身 Z 轴
-        转 ±90° 才能横跨杆身，退回 0° 会让两指沿杆长方向闭合，夹爪照常闭合、力也有读数，
-        但杆一根都不会被拿起来（实测单进程强制 0° 复现：力 12 N、杆原地不动）。
+        ``target_quat`` 是固定基座坐标系（wxyz）。**不能丢**：抓取要求工具绕自身 Z 轴转到
+        两指横跨杆身（RG2 的开合轴在站点 +x 上，用 0°/180°；2F-85 在 +y 上，用 ±90°，
+        见 mission_core.GRASP_SPIN_CANDIDATES_DEG）。退回 0° 会让两指沿杆长方向闭合，
+        夹爪照常闭合、力也有读数，但杆一根都不会被拿起来（实测单进程强制 0° 复现：
+        力 12 N、杆原地不动）。
         """
         quat = (
             mission_core.TARGET_QUAT
