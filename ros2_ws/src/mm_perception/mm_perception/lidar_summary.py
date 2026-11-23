@@ -162,17 +162,20 @@ class LidarSummary(Node):
         )
 
         # 仿真桥发出的点云已经按离地 0.08 m 过滤过，对照时把地面门限关掉，
-        # 免得因为安装高度填错而误丢点；真车上必须开，并填实测的 mount_height。
+        # 免得因为安装高度填错而误丢点；真车点云必须开，并填实测的 mount_height。
+        # **2D 扫描一律关掉地面门限**：扫描点全在 z=0 平面上，没有"离地高度"可言，
+        # 开着会把所有点当"贴地"丢掉（2D 模式下地面门限没有物理意义）。
         filter_ground = bool(self.get_parameter("filter_ground").value)
+        min_z = float(self.get_parameter("min_z").value) if filter_ground else None
+        if self._input == "scan":
+            min_z = None
         self._limits = dict(
             detect_range=LIDAR_DETECT_RANGE,
             front_half=LIDAR_FRONT_HALF,
             rear_half=LIDAR_REAR_HALF,
             side_max=LIDAR_SIDE_MAX,
             max_range=float(self.get_parameter("max_range").value),
-            min_z=(
-                float(self.get_parameter("min_z").value) if filter_ground else None
-            ),
+            min_z=min_z,
             mount_height=float(self.get_parameter("mount_height").value),
             self_radius=float(self.get_parameter("self_radius").value),
         )
