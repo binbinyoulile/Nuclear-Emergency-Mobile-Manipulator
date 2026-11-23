@@ -1536,58 +1536,21 @@ class DualCarMission:
 重要性等级：A"""
         return self.io.chassis[0].contacts_with(self.io.chassis[1])
 
-    def run(self) -> bool:
-        """执行双车协同回收完整状态机。
+    def _locate_target(
+        self, car2_follower: PathFollower, observation_pos: np.ndarray
+    ) -> np.ndarray:
+        """阶段 3：观测位视觉定位，返回粗端抓取点的世界坐标。
 
-返回：
-    True 表示物体最终在桶内、两车回到目标初始位置且车车接触数为 0。
-副作用：
-    推进长时间仿真、打印阶段日志，并按配置保存关键截图。
-异常：
-    路径超时、视觉丢失、IK 不可达或物理状态发散时由子调用抛异常。
-重要性等级：A"""
-        self.metrics["stage"] = "1_start"
-        print("\n[阶段 1] 两车位于起点红线外侧，任务开始。")
-        print(
-            f"           CAR1={np.round(self.car1.pose()[0][:2], 2)}, "
-            f"CAR2={np.round(self.car2.pose()[0][:2], 2)}, "
-            f"red_line_Y={RETURN_LINE_Y:.2f}"
-        )
-
-        self.metrics["stage"] = "2_car1_navigate"
-        print("\n[阶段 2] 一号车前往目标区，正在雷达避障...")
-        print("[模块解耦] 移动控制阶段：仅使用雷达和底盘控制，不调用相机/Renderer。")
-        drive_path(
-            self.io,
-            self.car1,
-            CAR1_SEARCH_PATH,
-            final_tolerance=0.12,
-            max_speed=CRUISE_SPEED,
-        )
-        observation_pos, observation_yaw = self.car1.pose()
-        # 抵达观测位的总览截图：此时雷达点云、两车与目标都在画面里，
-        # 与 main() 的开场总览用同一组相机参数，便于 README 前后对照。
-        self._capture("dual_car1_avoid.png", [2.0, 11.0, 0.20], 38.0, 135.0, -52.0)
-
+        流程：观测位拍一帧粗定位 → 按粗定位预测二号车停靠点 → 若分割不完整则
+        前进 0.5 m 重拍一次 → 记录视觉指标。相机装在腕部，所以这里不假设车停得
+        多准：视觉给的是杆的世界坐标，车只负责把杆放进视场。
+        """
         self.metrics["stage"] = "3_vision_dock"
         print(
             f"\n[阶段 3] 一号车抵达停靠点，坐标 "
             f"({observation_pos[0]:.3f}, {observation_pos[1]:.3f})，通知二号车出发。"
         )
 
-        provisional_goal = np.array(
-            [0.84, CAR2_DOCK_CENTER_Y - CAR2_STAGING_DY]
-        )
-        car2_follower = PathFollower(
-            self.car2,
-            [(float(provisional_goal[0]), float(provisional_goal[1]))],
-            self.io.clock,
-            waypoint_timeout=leg_timeout(19.0, CRUISE_SPEED),
-            final_tolerance=0.05,
-            max_speed=CRUISE_SPEED,
-        )
-        print("[并发调度] 二号车已收到出发指令，开始连续前往目标区。")
-        run_wait_concurrent(self.io, 0.15, car2_follower)
 
         print("[模块解耦] 一号车已经停车，先采一帧做粗定位。")
         print("\n[视觉识别] 观测位约 2.1 m：只做粗定位（棒在图上约 60 像素长）。")
@@ -1739,6 +1702,57 @@ class DualCarMission:
         else:
             run_wait_concurrent(self.io, 0.15, car2_follower)
         run_wait_concurrent(self.io, 0.5, car2_follower)
+
+        return target
+
+    def run(self) -> bool:
+        """执行双车协同回收完整状态机。
+
+返回：
+    True 表示物体最终在桶内、两车回到目标初始位置且车车接触数为 0。
+副作用：
+    推进长时间仿真、打印阶段日志，并按配置保存关键截图。
+异常：
+    路径超时、视觉丢失、IK 不可达或物理状态发散时由子调用抛异常。
+重要性等级：A"""
+        self.metrics["stage"] = "1_start"
+        print("\n[阶段 1] 两车位于起点红线外侧，任务开始。")
+        print(
+            f"           CAR1={np.round(self.car1.pose()[0][:2], 2)}, "
+            f"CAR2={np.round(self.car2.pose()[0][:2], 2)}, "
+            f"red_line_Y={RETURN_LINE_Y:.2f}"
+        )
+
+        self.metrics["stage"] = "2_car1_navigate"
+        print("\n[阶段 2] 一号车前往目标区，正在雷达避障...")
+        print("[模块解耦] 移动控制阶段：仅使用雷达和底盘控制，不调用相机/Renderer。")
+        drive_path(
+            self.io,
+            self.car1,
+            CAR1_SEARCH_PATH,
+            final_tolerance=0.12,
+            max_speed=CRUISE_SPEED,
+        )
+        observation_pos, observation_yaw = self.car1.pose()
+        # 抵达观测位的总览截图：此时雷达点云、两车与目标都在画面里，
+        # 与 main() 的开场总览用同一组相机参数，便于 README 前后对照。
+        self._capture("dual_car1_avoid.png", [2.0, 11.0, 0.20], 38.0, 135.0, -52.0)
+
+        provisional_goal = np.array(
+            [0.84, CAR2_DOCK_CENTER_Y - CAR2_STAGING_DY]
+        )
+        car2_follower = PathFollower(
+            self.car2,
+            [(float(provisional_goal[0]), float(provisional_goal[1]))],
+            self.io.clock,
+            waypoint_timeout=leg_timeout(19.0, CRUISE_SPEED),
+            final_tolerance=0.05,
+            max_speed=CRUISE_SPEED,
+        )
+        print("[并发调度] 二号车已收到出发指令，开始连续前往目标区。")
+        run_wait_concurrent(self.io, 0.15, car2_follower)
+
+        target = self._locate_target(car2_follower, observation_pos)
 
         grasp_start = self.io.clock.now
         self.metrics["stage"] = "4_grasp"
@@ -1945,7 +1959,7 @@ class DualCarMission:
             f"\n[阶段 7] 两车均已安全退回红线外侧，任务结束。\n"
             f"           CAR1=({car1_final[0]:.3f}, {car1_final[1]:.3f}), "
             f"CAR2=({car2_final[0]:.3f}, {car2_final[1]:.3f})\n"
-            f"           视觉误差={vision_error * 1000:.2f} mm, "
+            f"           视觉误差={self.metrics['vision_error_mm']:.2f} mm, "
             f"桶内余量={final_margin * 1000:.0f} mm（质心偏移 {final_xy_error:.4f} m）, "
             f"车车接触={contacts}\n"
             f"           回起点误差: CAR1={car1_home_error:.3f} m, "

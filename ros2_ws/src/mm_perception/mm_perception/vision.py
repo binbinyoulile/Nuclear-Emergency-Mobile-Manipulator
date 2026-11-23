@@ -135,6 +135,10 @@ def detect_steel_target(
         Detection；未分割到杆、或分割结果不像 202 mm 的杆时返回 None。
     约束：
         只使用传入的深度帧与相机位姿，不读取物体真值。
+    镜像实现：
+        单进程侧 `dual_car_pick_place.py` 的 `detect_steel_target()` 是同一算法的另一份
+        实现（那份直接从 MuJoCo 深度帧取位姿）。**两份的阈值、滤波顺序与粗端判据必须
+        一致**——改这边的常量或分割流程时要同步改那边，否则两条轨道的视觉会悄悄漂开。
     重要性等级：A"""
     world, valid = depth_to_world(depth, intrinsics, cam_pos, cam_rot)
 

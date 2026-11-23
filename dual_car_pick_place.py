@@ -545,6 +545,11 @@ def detect_steel_target(
            视觉点在这里三者重合。
     约束：
         只使用传入的深度帧与相机位姿，不读取物体真值。
+    镜像实现：
+        ROS 侧 `ros2_ws/src/mm_perception/mm_perception/vision.py` 里有同一算法的另一份
+        实现（那份从图像话题与 TF 拿位姿，不依赖 MuJoCo）。**两份的阈值、滤波顺序和
+        粗端判据必须一致**——改这边的 `STEEL_*` 常量或分割流程时，要同步改那边，
+        否则两条轨道的视觉结果会悄悄漂开（历史上就这样漂过一次）。
     重要性等级：A"""
     world, valid = depth_to_world(depth)
     # 先拟合地面平面再取"离地高度"。渲染器给出的深度带约 0.15% 的系统性偏差，

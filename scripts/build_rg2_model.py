@@ -14,12 +14,10 @@ from __future__ import annotations
 
 import pathlib
 import re
-import shutil
 
 ROOT = pathlib.Path(__file__).absolute().parent.parent  # 不要 resolve()：junction 会还原成中文路径
 MODEL_DIR = ROOT / "models" / "universal_robots_ur10e"
 RG2_DIR = ROOT / "models" / "onrobot_rg2"
-ASSETS = MODEL_DIR / "assets"
 
 JOBS = [
     ("dual_mobile_ur10e.xml", "dual_mobile_ur10_rg2.xml"),
