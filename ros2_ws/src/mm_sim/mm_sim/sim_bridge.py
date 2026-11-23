@@ -100,6 +100,7 @@ class SimBridge(Node):
         self._wheel_cmd: list[tuple[float, float, float] | None] = [None, None]
         self._fresh = [False, False]
         self._arm_cmd: np.ndarray | None = None
+        # 初值占位；真正的"全开"默认值在 `_load_scene` 里设——那时才有 `_base.FINGER_OPEN`。
         self._grip_cmd = 0.0
         self._capture_request = False
         self._snapshot_queue: list[str] = []
@@ -155,6 +156,10 @@ class SimBridge(Node):
 
         self._model = self._base.MODEL
         self._data = self._base.DATA
+        # 夹爪指令初值取“全开”。RG2 的 ctrl 就是半开度（米），0 会被 MuJoCo 钳到行程
+        # 下限 0.0005 = 全闭；两指只隔 1 mm 时下降，指垫会坐在杆顶上，pinch 卡在 19.8 mm
+        # 下不来，夹爪照样给出 38~40 N 的"夹住"读数而杆一动不动（轨道 B 曾整段失败）。
+        self._grip_cmd = float(self._base.FINGER_OPEN)
         self._cam_id = int(
             self._mujoco.mj_name2id(
                 self._model, self._mujoco.mjtObj.mjOBJ_CAMERA, CAMERA_NAME
@@ -522,7 +527,9 @@ class SimBridge(Node):
             self._data.ctrl[self._base.FINGER_ACT]
         )
         msg.effort = float(abs(self._data.actuator_force[self._base.FINGER_ACT]))
-        msg.moving = bool(abs(msg.position - self._grip_cmd) > 1.0)
+        # 阈值按 RG2 的半开度单位（米）取 1 mm：原来写死的 1.0 是 2F-85 的 0~255 口径，
+        # 换成 RG2 后 pos∈[0.0005, 0.055]，差值永远小于 1，"moving" 就永远报 False。
+        msg.moving = bool(abs(msg.position - self._grip_cmd) > 1e-3)
         self._gripper_pub.publish(msg)
 
     def _publish_truth(self, stamp: Time) -> None:

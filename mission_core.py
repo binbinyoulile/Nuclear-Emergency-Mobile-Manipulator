@@ -112,7 +112,11 @@ GROUND_Z = 0.0
 # 之间——低了指垫底面压进地面，高了夹持面盖不到棒身最宽处（Ø6 杆中心离地 3 mm）。
 # 取中间值，闭合后指垫底面离地约 1.5 mm。
 # 换成 2F-85 旧模型时这条带是 17.7~20.7 mm，两指垫比 RG2 长 3 mm。
-PINCH_ABOVE_FLOOR = 0.01625
+# 换成型材 RG2 后这条带是 14.75~17.75 mm。取**靠下沿**的 0.0155 而不是中值：指垫下沿离地
+# 只有 0.75 mm，但两指能把整根棒身（中心离地 3 mm、最高点 6 mm）完整裹住，允许 ±5 mm 的
+# 定位误差；取中值 0.01625 时指垫下沿离地 1.5 mm，指垫底缘只比杆顶低 0.75 mm，实测
+# ROS 侧只要高 3 mm 就变成"指垫坐在杆顶上"，夹爪闭合夹住却抬不起来。
+PINCH_ABOVE_FLOOR = 0.0155
 GRASP_WORLD_Z = GROUND_Z + PINCH_ABOVE_FLOOR
 APPROACH_WORLD_Z = GRASP_WORLD_Z + 0.17
 LIFT_WORLD_Z = GRASP_WORLD_Z + 0.30
@@ -145,6 +149,9 @@ FINGER_CLOSE = 0.0005
 # 动作时长，单位 s。
 APPROACH_TIME = 2.0
 DESCEND_TIME = 1.5
+# 抓取位伺服静差的收敛小步：只走几毫米，给 0.5 s 足够（比 DESCEND_TIME 短得多，
+# 不改变整体节拍，只补掉 3~4 mm 的跟踪误差）。
+GRASP_SETTLE_TIME = 0.5
 CLOSE_TIME = 1.5
 LIFT_TIME = 1.8
 CARRY_TIME = 2.8
@@ -1339,6 +1346,11 @@ def execute_grasp_concurrent(
     IK 不可达或姿态搜索失败时由底层抛 RuntimeError。
 重要性等级：A"""
     print("\n[GRASP] CAR1 arm starts while CAR2 continues driving")
+    # 抓取前显式张开夹爪。不能依赖模块初始化时的默认值：ROS 侧的夹爪指令缓存初值曾是 0，
+    # MuJoCo 把 0 钳到行程下限（全闭），下降时两指只隔 1 mm，指垫坐在杆顶上，pinch 卡在
+    # 19.8 mm 下不来——夹爪照样"夹住"（力 38~40 N），杆却一动不动。这一行两套后端都无害。
+    io.gripper.start(FINGER_OPEN, 0.6)
+    run_finger_motion_concurrent(io, follower)
     # 夹爪几何（pinch 站点为原点）：RG2 两指垫各半高 14.75 mm、中心与 pinch 同高，
     # 因此 pinch 必须停在离地 14.75~17.75 mm 这条带里，才能让夹持面盖住一根平躺的
     # Ø6 圆棒（棒心离地 3 mm）又不让指垫底面压进地面（见 PINCH_ABOVE_FLOOR）。
@@ -1351,7 +1363,33 @@ def execute_grasp_concurrent(
     run_arm_motion_concurrent(io, follower)
     start_arm_world_flexible(io, grasp, DESCEND_TIME, spin_deg)
     run_arm_motion_concurrent(io, follower)
+    # 轨迹结束不等于到位：末段插值很慢，再等 0.35 s 让伺服稳下来再测量，否则会把
+    # "还没停稳"误判成静差，一补就补过头。
+    run_wait_concurrent(io, 0.35, follower)
 
+    # 伺服静差闭环：位置伺服带重力负载会停在命令值上方几毫米（单进程约 0.4 mm，
+    # ROS 侧约 5 mm），而指垫的夹持窗口只有 3 mm（pinch 离地 14.75~17.75 mm）。
+    # 差 4 mm 就变成"指垫全部悬在杆上方"，夹爪空合（力 12~15 N、杆不动）。
+    # 按实测偏差修正目标再走一小段，最多两轮。
+    # 这里**不设**高度下限：偏差是"命令 → 实际"的常数偏移，只能靠把命令往下压来抵消；
+    # 真有地面挡着时，指垫压到地面就自然停住，比用一个固定下限更可靠。
+    for attempt in range(2):
+        err = np.asarray(io.arm.tool_position(), dtype=float) - grasp
+        if abs(err[2]) < 0.0015 and float(np.linalg.norm(err[:2])) < 0.0015:
+            break
+        print(f"  grasp settle #{attempt + 1}: err={np.round(err * 1000, 1)} mm")
+        grasp = grasp - err
+        start_arm_world_flexible(io, grasp, GRASP_SETTLE_TIME, spin_deg)
+        run_arm_motion_concurrent(io, follower)
+        run_wait_concurrent(io, 0.25, follower)
+
+    # 命令值与实际夹持点的对照。抓取空合时这一行能立刻分开两种情况：
+    # 机械臂没到位（实际值偏离命令值）还是夹爪没夹住（值对得上、杆却没抬起来）。
+    print(
+        f"  pinch at grasp: {np.round(io.arm.tool_position(), 4)} "
+        f"(cmd {np.round(grasp, 4)})"
+    )
+    print(f"  arm q at grasp: {np.round(io.arm.joint_positions(), 3)}")
     io.gripper.start(FINGER_CLOSE, CLOSE_TIME)
     run_finger_motion_concurrent(io, follower)
     print(f"  finger force after close: {io.gripper.force():.2f} N")
